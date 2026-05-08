@@ -81,10 +81,17 @@ class WeatherPoller:
     # internal -----------------------------------------------------------
 
     def _run(self) -> None:
-        lat, lon, city = self._resolve_location()
-        if lat is None:
-            with self._lock:
-                self._state["error"] = "geo lookup failed"
+        lat = lon = city = None
+        # Retry geolocation in a loop -- if all providers fail at boot we
+        # don't want to give up forever. Back off to WEATHER_REFRESH_SEC
+        # between full failures so we don't hammer the providers.
+        while not self._stop.is_set() and lat is None:
+            lat, lon, city = self._resolve_location()
+            if lat is None:
+                with self._lock:
+                    self._state["error"] = "geo lookup failed"
+                self._stop.wait(min(300, config.WEATHER_REFRESH_SEC))
+        if self._stop.is_set():
             return
         with self._lock:
             self._state["city"] = city
@@ -98,11 +105,17 @@ class WeatherPoller:
                 and config.WEATHER_LONGITUDE is not None):
             return (config.WEATHER_LATITUDE, config.WEATHER_LONGITUDE,
                     config.WEATHER_FALLBACK_CITY or "")
-        # Try ipapi.co first, then ip-api.com. Both are keyless; ipapi.co
-        # gives nicer city names but rate-limits hard, so the second
-        # provider catches us when the first 429s.
+        # Three keyless providers tried in order. Each has different
+        # failure modes:
+        #   ipapi.co     - HTTPS, nicest city names, hard rate limit (429)
+        #   ipwho.is     - HTTPS, generous limits, occasionally slow
+        #   ip-api.com   - HTTP only on free tier; may be blocked by
+        #                  networks that filter outbound port 80
         providers = [
             ("https://ipapi.co/json/",
+             lambda j: (float(j["latitude"]), float(j["longitude"]),
+                        j.get("city") or "")),
+            ("https://ipwho.is/",
              lambda j: (float(j["latitude"]), float(j["longitude"]),
                         j.get("city") or "")),
             ("http://ip-api.com/json/",
