@@ -127,14 +127,14 @@ class Greeter:
         msg = f"Hello {name}, welcome!"
         print(f"[GREET] {msg}")
         if self.transcript:
-            self.transcript.add("tts", msg)
+            self.transcript.system(msg)
         self.backend.speak(msg)
         return True
 
     def say(self, text: str):
         print(f"[TTS] {text}")
         if self.transcript:
-            self.transcript.add("tts", text)
+            self.transcript.system(text)
         self.backend.speak(text)
 
     def reset_last(self):
@@ -345,14 +345,9 @@ def main():
     liveness = LivenessChecker()
     learner = SilentLearner(db)
     blinker = BlinkChecker(pipe, grab_frame, draw_hud)
-    if transcript is not None:
-        transcript.add("system", "starting up")
 
     listener: WakeWordListener | None = None
     state = "ACTIVE" if args.no_wake_word else "IDLE"
-
-    on_partial_cb = (lambda t: transcript.add("partial", t)) if transcript else None
-    on_final_cb   = (lambda t: transcript.add("heard", t))   if transcript else None
 
     if not args.no_wake_word:
         try:
@@ -361,13 +356,9 @@ def main():
                 config.WAKE_WORD,
                 samplerate=config.WAKE_WORD_SAMPLERATE,
                 blocksize=config.WAKE_WORD_BLOCKSIZE,
-                on_partial=on_partial_cb,
-                on_final=on_final_cb,
             )
             listener.start()
             print(f"[wake-word] listening for: '{config.WAKE_WORD}'")
-            if transcript:
-                transcript.add("system", f"listening for '{config.WAKE_WORD}'")
         except WakeWordError as exc:
             print(f"[wake-word] disabled: {exc}")
             print("[wake-word] starting in ACTIVE state. Use --no-wake-word to silence this.")
@@ -401,8 +392,7 @@ def main():
                 liveness.reset()
                 blink_confirmed.clear()
                 if transcript:
-                    transcript.add("wake", config.WAKE_WORD)
-                    transcript.add("state", "IDLE -> ACTIVE")
+                    transcript.user(config.WAKE_WORD)
                 greeter.say("Hello. I am ready.")
                 print("[state] IDLE -> ACTIVE")
 
@@ -478,7 +468,7 @@ def main():
                     if greeter.greet(emp_id, name):
                         last_interaction_at = time.time()
                         if transcript:
-                            transcript.add("match", f"{name} ({score:.2f})")
+                            transcript.event(f"Recognised {name}")
 
                 if biggest_quality_unknown:
                     # Someone unfamiliar is in frame -- keep awake while we
@@ -486,7 +476,7 @@ def main():
                     last_interaction_at = time.time()
                     unknown_streak += 1
                     if transcript and unknown_streak == 1:
-                        transcript.add("unknown", "new face seen")
+                        transcript.event("New face — getting ready to register")
                 else:
                     unknown_streak = 0
 
@@ -514,7 +504,7 @@ def main():
                         greeter.reset_last()
                         listener.deactivate()
                         if transcript:
-                            transcript.add("state", f"ACTIVE -> IDLE ({idle_for:.0f}s)")
+                            transcript.event("Going to sleep — say 'hello echo' to wake me")
                         print(f"[state] ACTIVE -> IDLE (idle for {idle_for:.0f}s)")
 
             # ---- HUD ---------------------------------------------------

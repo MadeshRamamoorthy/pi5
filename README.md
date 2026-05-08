@@ -490,12 +490,17 @@ What happens:
 - **All recognised faces are greeted**, not just the largest one. Each
   emp_id is rate-limited to one greeting per `GREET_COOLDOWN_SEC` so
   someone walking back and forth doesn't trigger repeats.
-- The window is split: **camera on the left, live transcript on the
-  right**. The right panel logs mic input (Vosk partials + finals),
-  wake-word triggers, TTS output, recognition events, liveness
-  decisions, and IDLE↔ACTIVE transitions, each colour-coded and
-  timestamped. Disable with `SHOW_TRANSCRIPT_PANEL = False` if you'd
-  rather have just the camera view.
+- The window is split: **camera on the left, conversation panel on the
+  right**. The panel reads like a chat — three roles only:
+  - **You** — the wake word when matched.
+  - **Echo** — what the system says (greetings, prompts).
+  - **·** — short status events (`Recognised Echo`, `New face — getting
+    ready to register`, `Going to sleep`).
+
+  Vosk partials, internal state transitions, streak counters, etc. go
+  to stdout for debugging — the on-screen panel stays readable. Disable
+  with `SHOW_TRANSCRIPT_PANEL = False` if you want the camera-only
+  window.
 - After `IDLE_AFTER_LAST_INTERACTION_SEC` (10 s) **with no new event**
   the system drops back to IDLE. "New event" means a different person
   greeted, or an unknown face standing in front of the camera. A
