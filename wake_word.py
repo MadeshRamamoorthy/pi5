@@ -136,12 +136,23 @@ class WakeWordListener:
 
     def _consume(self, data: bytes) -> None:
         if self._recognizer.AcceptWaveform(data):
-            text = json.loads(self._recognizer.Result()).get("text", "")
+            text = json.loads(self._recognizer.Result()).get("text", "").strip().lower()
             if text and self._on_final:
                 try:
                     self._on_final(text)
                 except Exception:
                     pass
+            # Only fire on FINAL transcripts. Partial results from Vosk's
+            # grammar-restricted recognizer ("hello echo" vs "[unk]") tend
+            # to lock onto the wake phrase before the audio has settled,
+            # producing false positives on ambient speech / clatter. The
+            # final transcript is much more reliable.
+            #
+            # Match the *whole* utterance (or the keyword followed by
+            # filler tokens like "the"). A bare substring check would
+            # accept any sentence happening to contain "hello echo".
+            if text == self.keyword or text.startswith(self.keyword + " "):
+                self._activated.set()
         else:
             text = json.loads(self._recognizer.PartialResult()).get("partial", "")
             if text and self._on_partial:
@@ -149,5 +160,3 @@ class WakeWordListener:
                     self._on_partial(text)
                 except Exception:
                     pass
-        if self.keyword in text.lower():
-            self._activated.set()
