@@ -18,8 +18,12 @@ EMBEDDER_INPUT = (112, 112)
 EMBEDDING_DIM = 512
 
 # Recognition
-COSINE_MATCH_THRESHOLD = 0.45  # ArcFace: >0.45 typically same identity
+COSINE_MATCH_THRESHOLD = 0.38  # ArcFace: 0.35-0.45 typical; lower => looser match
 GREET_COOLDOWN_SEC = 10        # don't repeat greeting for the same person
+
+# Registration
+REGISTRATION_FRAMES = 5        # how many embeddings to capture per new person
+REGISTRATION_INTERVAL_MS = 400 # wait between capture frames (lets you change pose)
 
 # Camera
 CAMERA_RESOLUTION = (1280, 720)

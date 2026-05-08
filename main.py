@@ -58,13 +58,16 @@ def open_camera() -> Picamera2:
     )
     cam.configure(cfg)
     cam.start()
-    time.sleep(1.0)  # let AE/AWB settle
+    time.sleep(1.0)
     return cam
 
 
 def grab_frame(cam: Picamera2) -> np.ndarray:
-    rgb = cam.capture_array()
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    """picamera2 'RGB888' actually returns BGR-ordered bytes on libcamera, so
+    the array is already in the BGR layout that cv2 / our model wrappers expect.
+    Returning it as-is avoids a double channel-swap (which discolours the preview).
+    """
+    return cam.capture_array()
 
 
 def largest_detection(dets):
@@ -73,8 +76,57 @@ def largest_detection(dets):
     return max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
 
 
-def prompt_registration(db: FaceDB, greeter: Greeter, embedding: np.ndarray) -> bool:
-    """Ask via stdin for emp_id + name and persist the embedding."""
+def capture_embeddings(
+    cam: Picamera2,
+    pipe: HailoFacePipeline,
+    n_frames: int,
+    interval_ms: int,
+    show_preview: bool,
+) -> list[np.ndarray]:
+    """Capture n_frames embeddings of the largest face, showing live progress."""
+    embeddings: list[np.ndarray] = []
+    while len(embeddings) < n_frames:
+        frame = grab_frame(cam)
+        dets = pipe.detect(
+            frame,
+            config.DETECTOR_SCORE_THRESHOLD,
+            config.DETECTOR_NMS_IOU,
+        )
+        det = largest_detection(dets)
+        if det is not None:
+            aligned = align_face(frame, det.landmarks)
+            embeddings.append(pipe.embed(aligned))
+
+        if show_preview:
+            for d in dets:
+                x1, y1, x2, y2 = (int(v) for v in d.bbox)
+                colour = (0, 200, 255) if d is det else (90, 90, 90)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+            cv2.putText(
+                frame,
+                f"Registering... {len(embeddings)}/{n_frames}  (move your head a bit)",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 200, 255),
+                2,
+            )
+            cv2.imshow("Face Recognition", frame)
+            cv2.waitKey(interval_ms)
+        else:
+            time.sleep(interval_ms / 1000.0)
+    return embeddings
+
+
+def prompt_registration(
+    db: FaceDB,
+    greeter: Greeter,
+    cam: Picamera2,
+    pipe: HailoFacePipeline,
+    show_preview: bool,
+    first_embedding: np.ndarray,
+) -> bool:
+    """Ask via stdin for emp_id + name, capture additional samples, persist."""
     greeter.say("I do not recognise you. Please register at the console.")
     print("\n--- New face detected ---")
     emp_id = input("Employee ID: ").strip()
@@ -85,12 +137,27 @@ def prompt_registration(db: FaceDB, greeter: Greeter, embedding: np.ndarray) -> 
     if not name:
         print("Skipped.")
         return False
+
+    greeter.say(
+        f"Capturing {config.REGISTRATION_FRAMES} samples. "
+        "Please slowly turn your head left, right, up and down."
+    )
+    extra = capture_embeddings(
+        cam,
+        pipe,
+        n_frames=max(config.REGISTRATION_FRAMES - 1, 0),
+        interval_ms=config.REGISTRATION_INTERVAL_MS,
+        show_preview=show_preview,
+    )
+    embeddings = [first_embedding, *extra]
+
     if db.employee_exists(emp_id):
-        db.add_embedding(emp_id, embedding)
+        for emb in embeddings:
+            db.add_embedding(emp_id, emb)
     else:
-        db.add_employee(emp_id, name, [embedding])
+        db.add_employee(emp_id, name, embeddings)
     greeter.say(f"Thank you {name}, you are now registered.")
-    print(f"Registered {name} ({emp_id}).\n")
+    print(f"Registered {name} ({emp_id}) with {len(embeddings)} samples.\n")
     return True
 
 
@@ -113,17 +180,14 @@ def draw(frame, dets, label_for):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--no-display",
-        action="store_true",
-        help="Run headless (no preview window).",
-    )
+    parser.add_argument("--no-display", action="store_true")
     parser.add_argument(
         "--auto-register",
         action="store_true",
         help="Prompt to register every unknown face automatically.",
     )
     args = parser.parse_args()
+    show_preview = not args.no_display
 
     pipe = HailoFacePipeline(config.DETECTOR_HEF, config.EMBEDDER_HEF)
     db = FaceDB()
@@ -162,10 +226,12 @@ def main():
                         and time.time() - last_unknown_prompt > 5
                     ):
                         last_unknown_prompt = time.time()
-                        if prompt_registration(db, greeter, emb):
+                        if prompt_registration(
+                            db, greeter, cam, pipe, show_preview, emb
+                        ):
                             emp_ids, names, matrix = db.load_all()
 
-            if not args.no_display:
+            if show_preview:
                 draw(frame, dets, lambda d: labels.get(dets.index(d), ""))
                 cv2.imshow("Face Recognition", frame)
                 key = cv2.waitKey(1) & 0xFF
@@ -174,13 +240,15 @@ def main():
                 if key == ord("r") and biggest is not None:
                     aligned = align_face(frame, biggest.landmarks)
                     emb = pipe.embed(aligned)
-                    if prompt_registration(db, greeter, emb):
+                    if prompt_registration(
+                        db, greeter, cam, pipe, show_preview, emb
+                    ):
                         emp_ids, names, matrix = db.load_all()
     finally:
         cam.stop()
         pipe.close()
         db.close()
-        if not args.no_display:
+        if show_preview:
             cv2.destroyAllWindows()
 
 
