@@ -98,18 +98,28 @@ class WeatherPoller:
                 and config.WEATHER_LONGITUDE is not None):
             return (config.WEATHER_LATITUDE, config.WEATHER_LONGITUDE,
                     config.WEATHER_FALLBACK_CITY or "")
-        try:
-            r = requests.get("https://ipapi.co/json/", timeout=4)
-            r.raise_for_status()
-            j = r.json()
-            return (
-                float(j["latitude"]),
-                float(j["longitude"]),
-                j.get("city") or "",
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[weather] geo lookup failed: {exc}")
-            return None, None, None
+        # Try ipapi.co first, then ip-api.com. Both are keyless; ipapi.co
+        # gives nicer city names but rate-limits hard, so the second
+        # provider catches us when the first 429s.
+        providers = [
+            ("https://ipapi.co/json/",
+             lambda j: (float(j["latitude"]), float(j["longitude"]),
+                        j.get("city") or "")),
+            ("http://ip-api.com/json/",
+             lambda j: (float(j["lat"]), float(j["lon"]),
+                        j.get("city") or "")),
+        ]
+        last_exc = None
+        for url, parse in providers:
+            try:
+                r = requests.get(url, timeout=4)
+                r.raise_for_status()
+                return parse(r.json())
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                print(f"[weather] {url} failed: {exc}")
+        print(f"[weather] all geo providers failed; last: {last_exc}")
+        return None, None, None
 
     def _poll(self, lat: float, lon: float) -> None:
         try:
