@@ -348,10 +348,31 @@ export SD_DEVICE=<index>     # picked up automatically by sounddevice
 
 ### 3.1 Live recogniser with auto-registration
 
+The fastest way to launch with mic + speaker pinned to the Anker is the
+provided wrapper:
+
 ```bash
 cd /home/echo/Documents/code/pi5
+./start.sh
+```
+
+`start.sh` exports `SD_DEVICE` (mic input index for sounddevice) and
+`AUDIO_OUTPUT_DEVICE` (ALSA name for the speaker), activates the venv,
+and runs `python main.py --auto-register`. Edit the defaults at the top
+of the script for your machine, or override per invocation:
+
+```bash
+SD_DEVICE=3 ./start.sh
+EXTRA_ARGS="--no-wake-word --auto-register" ./start.sh
+./start.sh --no-display      # extra args pass through to main.py
+```
+
+If you'd rather drive `python main.py` directly:
+
+```bash
 source .venv/bin/activate
-python main.py --auto-register
+SD_DEVICE=1 AUDIO_OUTPUT_DEVICE=plughw:CARD=PowerConf,DEV=0 \
+    python main.py --auto-register
 ```
 
 What happens:

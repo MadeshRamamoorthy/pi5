@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 ROOT = Path(__file__).resolve().parent
 MODELS_DIR = ROOT / "models"
@@ -67,11 +68,13 @@ REREGISTER_MATCH_THRESHOLD = 0.35
 # None  -> use system default audio sink (HDMI / 3.5 mm / whatever PipeWire
 #          decides). To pin TTS to the Anker (or any specific output), set
 #          this to an ALSA name from `aplay -L`, e.g.:
-#            "plughw:CARD=A3301,DEV=0"
+#            "plughw:CARD=PowerConf,DEV=0"
 #            "plughw:2,0"
+# Also overridable at runtime via the AUDIO_OUTPUT_DEVICE env var (the
+# start.sh script uses this).
 # When set, pyttsx3 synthesises to a temporary WAV and aplay plays it on
 # the chosen device, so this works even when the system default is HDMI.
-AUDIO_OUTPUT_DEVICE: str | None = None
+AUDIO_OUTPUT_DEVICE: str | None = os.environ.get("AUDIO_OUTPUT_DEVICE") or None
 
 # ---- Wake-word / activation -----------------------------------------------
 WAKE_WORD = "hello echo"          # phrase that activates recognition
