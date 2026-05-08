@@ -52,6 +52,37 @@ if [[ ! -d models/vosk-model-small-en-us-0.15 ]]; then
     echo "      Download (see README §2.8) to enable 'hello echo'." >&2
 fi
 
+# ---- Display / X handling -----------------------------------------------
+# Common pitfall: running this script as root drops the user's X session
+# variables, so cv2's Qt preview can't connect to the display. Fix it up
+# here automatically. If we still can't reach an X display, fall back to
+# --no-display so the app at least runs headless.
+if [[ $EUID -eq 0 ]]; then
+    echo "Warning: running as root. Prefer running as the 'echo' user." >&2
+    if [[ -z "${DISPLAY:-}" ]]; then
+        export DISPLAY=":0"
+    fi
+    if [[ -z "${XAUTHORITY:-}" && -f /home/echo/.Xauthority ]]; then
+        export XAUTHORITY=/home/echo/.Xauthority
+    fi
+fi
+
+x_ok=true
+if ! command -v xset >/dev/null 2>&1; then
+    # No xset; we can't probe. Trust DISPLAY being set.
+    [[ -z "${DISPLAY:-}" ]] && x_ok=false
+elif ! xset q >/dev/null 2>&1; then
+    x_ok=false
+fi
+
+if ! $x_ok; then
+    echo "Note: no usable X display; adding --no-display." >&2
+    case " $EXTRA_ARGS $* " in
+        *" --no-display "*) ;;
+        *) EXTRA_ARGS="$EXTRA_ARGS --no-display" ;;
+    esac
+fi
+
 # ---- Activate venv & launch ---------------------------------------------
 # shellcheck source=/dev/null
 source .venv/bin/activate
