@@ -65,14 +65,15 @@ POSE_CAPTURE_TIMEOUT_SEC = 8.0 # give up on this pose if user doesn't comply
 REREGISTER_MATCH_THRESHOLD = 0.35
 
 # ---- TTS backend ----------------------------------------------------------
-# "piper"   -> neural Piper (much more natural). Falls back to pyttsx3
-#              automatically if the binary or voice model is missing.
+# "piper"   -> neural Piper via the piper1-gpl Python package
+#              (pip install piper-tts). Falls back to pyttsx3 automatically
+#              if the package or the voice model isn't installed yet.
 # "pyttsx3" -> espeak-ng. Robotic but always available.
 TTS_BACKEND = "piper"
 
-# Project-local Piper install. README §2.9 covers downloading both.
-PIPER_BIN = ROOT / "tools" / "piper" / "piper"
-PIPER_MODEL_PATH = MODELS_DIR / "piper" / "en_US-amy-medium.onnx"
+# Default voice. Drop more .onnx + .onnx.json pairs into models/piper/
+# and point this at any of them to switch voices. See README §2.9.
+PIPER_MODEL_PATH = MODELS_DIR / "piper" / "en_US-hfc_female-medium.onnx"
 
 # ---- Audio output for TTS -------------------------------------------------
 # None  -> use system default audio sink (HDMI / 3.5 mm / whatever PipeWire

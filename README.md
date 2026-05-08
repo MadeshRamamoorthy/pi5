@@ -345,64 +345,67 @@ export SD_DEVICE=<index>     # picked up automatically by sounddevice
 ### 2.9 Better-sounding TTS with Piper (recommended)
 
 The default voice uses `pyttsx3` + `espeak-ng` — fast but robotic.
-**Piper** is a neural TTS engine that runs on-device and produces a much
-more natural voice. The app auto-detects which Piper install is
-available and falls back to `pyttsx3` if none is. Skip this section to
-keep the espeak voice.
+**Piper** (via the [`piper1-gpl`](https://github.com/OHF-Voice/piper1-gpl)
+rewrite) is a neural TTS engine that runs on-device and produces a much
+more natural voice. It loads the ONNX voice once at startup so each
+utterance is fast (~200–400 ms on Pi 5). Skip this section to keep the
+espeak voice — the app falls back to `pyttsx3` automatically if Piper
+isn't available.
 
-There are two flavours; you only need one. The Python package is the
-preferred path because it loads the voice model once at startup
-(subsequent utterances are noticeably faster).
-
-#### Option 1 (preferred): Python `piper-tts` / `piper1-gpl`
+#### 1. Install the Python package
 
 ```bash
 cd /home/echo/Documents/code/pi5
 source .venv/bin/activate
-pip install piper-tts        # piper1-gpl rewrite; pure Python + onnxruntime
+pip install piper-tts
 ```
 
 Wheels are published for cp38–cp312. **On Python 3.13 (Trixie default)
-this currently fails** because no cp313 wheel exists yet — fall through
-to Option 2.
+the install will fail** with `No matching distribution found` — Piper
+hasn't shipped cp313 wheels yet. Either pip will skip it (the
+`requirements.txt` marks it conditional) or you can build a side venv
+on Python 3.12 just for TTS. The app falls back to `pyttsx3` cleanly
+either way.
 
-#### Option 2: CLI binary from rhasspy/piper releases
+#### 2. Download voice models
 
-Project-local install so it doesn't pollute the system:
-
-```bash
-mkdir -p tools models/piper
-cd tools
-wget https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz
-tar -xzf piper_linux_aarch64.tar.gz
-rm piper_linux_aarch64.tar.gz
-# Tools layout: tools/piper/piper (the binary)
-cd ..
-```
-
-**Voice models** — use the bundled installer to grab a curated set of
-clear English voices (~500 MB, 7 voices), or `--all` for every English
-voice in the script (~2 GB). To download just one voice manually, use
-the wget commands inside `install_piper_voices.sh` as a template.
+Use the bundled installer to grab a curated set of clear English voices
+(~500 MB, 8 voices), or `--all` for every English voice listed in the
+script (~2 GB).
 
 ```bash
-./install_piper_voices.sh             # 7 curated voices (recommended)
+./install_piper_voices.sh             # 8 curated voices (recommended)
 ./install_piper_voices.sh --all       # every English voice listed
 ./install_piper_voices.sh --list      # show what each option installs
 ```
 
-After download, switch voices by editing `PIPER_MODEL_PATH` in
-`config.py` to point at any `.onnx` under `models/piper/`. Default is
-Amy (US English, female). Other clear options:
+The default voice (`config.PIPER_MODEL_PATH`) is
+`en_US-hfc_female-medium`. Switch by dropping a different `.onnx` +
+`.onnx.json` pair into `models/piper/` and updating `PIPER_MODEL_PATH`
+in `config.py`.
 
 | Voice                              | Style |
 |------------------------------------|-------|
-| `en_US-amy-medium`                 | US female, clear  ← default |
+| `en_US-hfc_female-medium`          | US female, very clear  ← default |
+| `en_US-amy-medium`                 | US female, slightly warmer |
 | `en_US-lessac-medium`              | US male, news-anchor |
 | `en_US-ryan-medium`                | US male, conversational |
 | `en_US-libritts-high`              | Highest quality, slower |
 | `en_GB-alan-medium`                | British male |
 | `en_GB-jenny_dioco-medium`         | British female |
+
+#### 3. Smoke test
+
+```bash
+python -c "
+from piper import PiperVoice
+import wave
+v = PiperVoice.load('models/piper/en_US-hfc_female-medium.onnx')
+with wave.open('/tmp/test.wav', 'wb') as f:
+    v.synthesize_wav('Hello, this is the default voice.', f)
+"
+aplay -D plughw:CARD=PowerConf,DEV=0 /tmp/test.wav
+```
 
 **Smoke test** through the Anker (if you've pinned `AUDIO_OUTPUT_DEVICE`):
 
@@ -413,15 +416,13 @@ echo "Hello, this is Amy speaking." | tools/piper/piper \
 aplay -D plughw:CARD=PowerConf,DEV=0 /tmp/test.wav
 ```
 
-`./start.sh` should now print one of:
+`./start.sh` will print one of these on launch:
 
-- `[TTS] using Piper (Python): en_US-amy-medium.onnx`  ← Option 1
-- `[TTS] using Piper (CLI): en_US-amy-medium.onnx ...` ← Option 2
-- `[TTS] using pyttsx3 / espeak-ng`                    ← neither installed
+- `[TTS] using Piper (Python): en_US-hfc_female-medium.onnx`  ← installed
+- `[TTS] using pyttsx3 / espeak-ng`                            ← Piper unavailable
 
-To switch voices, drop a different `.onnx` + `.onnx.json` pair into
-`models/piper/` and update `PIPER_MODEL_PATH` in `config.py`. To force
-the espeak voice anyway, set `TTS_BACKEND = "pyttsx3"` in `config.py`.
+To force the espeak voice anyway, set `TTS_BACKEND = "pyttsx3"` in
+`config.py`.
 
 ---
 

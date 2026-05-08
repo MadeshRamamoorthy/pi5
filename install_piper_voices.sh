@@ -18,8 +18,10 @@ HF_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main"
 mkdir -p "$DEST"
 
 # Curated voices: clear, well-balanced for greeting use.
+# en_US-hfc_female-medium is the project default (config.PIPER_MODEL_PATH).
 CURATED=(
-    # US English - female, clear
+    # US English - female
+    "en/en_US/hfc_female/medium/en_US-hfc_female-medium"
     "en/en_US/amy/medium/en_US-amy-medium"
     "en/en_US/kathleen/low/en_US-kathleen-low"
     "en/en_US/lessac/medium/en_US-lessac-medium"
@@ -36,7 +38,6 @@ ALL_EN=(
     "${CURATED[@]}"
     "en/en_US/amy/low/en_US-amy-low"
     "en/en_US/danny/low/en_US-danny-low"
-    "en/en_US/hfc_female/medium/en_US-hfc_female-medium"
     "en/en_US/hfc_male/medium/en_US-hfc_male-medium"
     "en/en_US/kristin/medium/en_US-kristin-medium"
     "en/en_US/kusal/medium/en_US-kusal-medium"
