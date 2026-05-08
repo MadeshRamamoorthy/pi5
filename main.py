@@ -56,6 +56,47 @@ def best_self_match(embeddings, db_ids, db_matrix, emp_id) -> float:
     return max(float((sub @ e).max()) for e in embeddings)
 
 
+class SilentLearner:
+    """Quietly appends new embeddings to a recognised person's gallery so
+    recognition gets more robust over time. Rate-limited per person and
+    capped per person to keep the DB bounded."""
+
+    def __init__(self, db: FaceDB):
+        self.db = db
+        self._last_added: dict[str, float] = {}
+
+    def maybe_add(self, emp_id: str, name: str,
+                  embedding: np.ndarray, score: float) -> bool:
+        if not config.SILENT_LEARN_ENABLED:
+            return False
+        if score < config.SILENT_LEARN_MIN_SCORE:
+            return False
+        now = time.time()
+        if now - self._last_added.get(emp_id, 0) < config.SILENT_LEARN_MIN_INTERVAL_SEC:
+            return False
+
+        existing = self.db.get_embeddings(emp_id)
+        if existing.shape[0] > 0:
+            sims = existing @ embedding
+            if float(sims.max()) > config.SILENT_LEARN_MAX_SIMILARITY:
+                # Already have an essentially-identical sample. Skip.
+                return False
+
+        self.db.add_embedding(emp_id, embedding)
+        self._last_added[emp_id] = now
+
+        # Cap per-person sample count by trimming the oldest extras.
+        cap = config.SILENT_LEARN_MAX_SAMPLES_PER_PERSON
+        n = self.db.count_embeddings(emp_id)
+        if n > cap:
+            dropped = self.db.trim_embeddings(emp_id, cap)
+            print(f"[silent-learn] +1 sample for {emp_id} ({name}); "
+                  f"capped at {cap}, dropped {dropped} older.")
+        else:
+            print(f"[silent-learn] +1 sample for {emp_id} ({name}); now {n}.")
+        return True
+
+
 def largest_detection(dets):
     if not dets:
         return None
@@ -321,6 +362,7 @@ def main():
     greeter = Greeter()
     cam = open_camera()
     liveness = LivenessChecker()
+    learner = SilentLearner(db)
 
     listener: WakeWordListener | None = None
     state = "ACTIVE" if args.no_wake_word else "IDLE"
@@ -396,6 +438,11 @@ def main():
                             # greet() returns True only on a *new* person.
                             if greeter.greet(emp_ids[idx], names[idx]):
                                 last_interaction_at = time.time()
+                            # Silently grow the gallery on confident matches.
+                            if learner.maybe_add(
+                                emp_ids[idx], names[idx], emb, score
+                            ):
+                                emp_ids, names, matrix = db.load_all()
                     else:
                         labels[i] = f"unknown ({score:.2f})"
                         if det is biggest:
@@ -419,11 +466,12 @@ def main():
                     last_interaction_at = time.time()
 
                 # ---- ACTIVE -> IDLE timeouts ---------------------------
-                # 30s after the last *new* event -- a recognised person who
-                # just stands there does NOT keep the system awake.
+                # IDLE_AFTER_LAST_INTERACTION_SEC after the last *new* event
+                # -- a recognised person who just stands there does NOT keep
+                # the system awake.
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
                 if (
-                    idle_for >= config.SLEEP_AFTER_NO_LIVE_FACE_SEC
+                    idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
                     or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)
                 ):
                     if listener is not None:

@@ -77,10 +77,26 @@ AUDIO_OUTPUT_DEVICE: str | None = None
 WAKE_WORD = "hello echo"          # phrase that activates recognition
 WAKE_WORD_SAMPLERATE = 16000
 WAKE_WORD_BLOCKSIZE = 8000
-# Auto-revert to idle after this many seconds with no live face detected.
-SLEEP_AFTER_NO_LIVE_FACE_SEC = 30
-# After waking, also auto-sleep this long after the last greeting (back-stop).
+# Drop back to IDLE this long after the last *interaction* (a new person
+# greeted, an unknown face in frame, or a registration completing). A
+# recognised person who keeps standing in front of the camera does NOT
+# reset this timer -- 10 s after the last new event we sleep.
+IDLE_AFTER_LAST_INTERACTION_SEC = 10
+# Backwards-compat alias used by older code paths.
+SLEEP_AFTER_NO_LIVE_FACE_SEC = IDLE_AFTER_LAST_INTERACTION_SEC
+# Hard back-stop on any single ACTIVE session.
 ACTIVE_SESSION_MAX_SEC = 600
+
+# ---- Silent learning ------------------------------------------------------
+# When a confidently recognised face passes the quality + liveness gates,
+# append the new embedding to that person's gallery so recognition gets
+# more robust over time. Rate-limited and capped so the DB doesn't grow
+# unbounded.
+SILENT_LEARN_ENABLED = True
+SILENT_LEARN_MIN_SCORE = 0.55          # only learn when match is comfortable
+SILENT_LEARN_MAX_SIMILARITY = 0.92     # skip if new sample is ~ a duplicate of an existing one
+SILENT_LEARN_MIN_INTERVAL_SEC = 60     # at most one new sample per person per minute
+SILENT_LEARN_MAX_SAMPLES_PER_PERSON = 30  # cap; oldest non-enrolment samples drop first
 
 # ---- Liveness (passive anti-spoofing) -------------------------------------
 # Sliding window length over which we compute liveness signals.

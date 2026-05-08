@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sqlite3
 from pathlib import Path
 from typing import Iterable
@@ -101,6 +103,42 @@ class FaceDB:
         )
         self.conn.commit()
         return cur.rowcount > 0
+
+    def get_embeddings(self, emp_id: str) -> np.ndarray:
+        rows = self.conn.execute(
+            "SELECT embedding FROM face_embeddings WHERE emp_id = ?",
+            (emp_id,),
+        ).fetchall()
+        if not rows:
+            return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+        return np.stack([_from_blob(r[0]) for r in rows]).astype(np.float32)
+
+    def count_embeddings(self, emp_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM face_embeddings WHERE emp_id = ?",
+            (emp_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def trim_embeddings(self, emp_id: str, keep_n: int) -> int:
+        """Keep the newest `keep_n` embeddings for this emp_id, drop older
+        ones. Returns the number deleted."""
+        if keep_n <= 0:
+            return 0
+        rows = self.conn.execute(
+            "SELECT id FROM face_embeddings WHERE emp_id = ? "
+            "ORDER BY id DESC LIMIT -1 OFFSET ?",
+            (emp_id, keep_n),
+        ).fetchall()
+        if not rows:
+            return 0
+        ids = [r[0] for r in rows]
+        self.conn.executemany(
+            "DELETE FROM face_embeddings WHERE id = ?",
+            [(i,) for i in ids],
+        )
+        self.conn.commit()
+        return len(ids)
 
 
 def _to_blob(vec: np.ndarray) -> bytes:

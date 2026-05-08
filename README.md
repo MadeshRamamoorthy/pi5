@@ -373,12 +373,18 @@ What happens:
   `checking liveness... (static (photo?))`. This blocks held-up photos
   and still images on a phone screen. (Video replay can still spoof —
   see "Limitations" below.)
-- After `SLEEP_AFTER_NO_LIVE_FACE_SEC` (30 s) **with no new event** the
-  system drops back to IDLE. "New event" means a different person
+- After `IDLE_AFTER_LAST_INTERACTION_SEC` (10 s) **with no new event**
+  the system drops back to IDLE. "New event" means a different person
   greeted, or an unknown face standing in front of the camera. A
   recognised person who keeps standing there does NOT keep the system
   awake — the timer counts down anyway. Saying "hello echo" again wakes
   it back up.
+- On every confident match (score ≥ `SILENT_LEARN_MIN_SCORE`) the new
+  embedding is silently appended to that person's gallery, so the
+  recogniser gets more robust over time. Rate-limited to one new sample
+  per person per `SILENT_LEARN_MIN_INTERVAL_SEC` (60 s default), and
+  capped at `SILENT_LEARN_MAX_SAMPLES_PER_PERSON` (30 default — oldest
+  drop first when over). Set `SILENT_LEARN_ENABLED = False` to turn off.
 - An unknown but high-quality, **live** face must persist for
   `UNKNOWN_FRAMES_BEFORE_REGISTER` consecutive frames (~half a second)
   before registration is offered. The counter is shown on screen.
@@ -474,9 +480,19 @@ Wake word + state machine:
 
 | Setting | Effect |
 |---------|--------|
-| `WAKE_WORD`                       | Phrase that activates recognition. Default `"hello echo"`. |
-| `SLEEP_AFTER_NO_LIVE_FACE_SEC`    | Drop back to IDLE after this much silence (30 s) |
-| `ACTIVE_SESSION_MAX_SEC`          | Hard cap on an ACTIVE session (10 min) |
+| `WAKE_WORD`                          | Phrase that activates recognition. Default `"hello echo"`. |
+| `IDLE_AFTER_LAST_INTERACTION_SEC`    | Drop back to IDLE after this many seconds with no new event (10) |
+| `ACTIVE_SESSION_MAX_SEC`             | Hard cap on an ACTIVE session (10 min) |
+
+Silent learning:
+
+| Setting | Effect |
+|---------|--------|
+| `SILENT_LEARN_ENABLED`                | Master switch (True) |
+| `SILENT_LEARN_MIN_SCORE`              | Only learn when match score ≥ this (0.55) |
+| `SILENT_LEARN_MAX_SIMILARITY`         | Skip if new sample is ~ a duplicate of one already stored (0.92) |
+| `SILENT_LEARN_MIN_INTERVAL_SEC`       | At most one new sample per person per this many seconds (60) |
+| `SILENT_LEARN_MAX_SAMPLES_PER_PERSON` | Cap; oldest drop first when over (30) |
 
 Liveness:
 
