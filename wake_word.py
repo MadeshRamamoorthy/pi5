@@ -42,6 +42,8 @@ class WakeWordListener:
         samplerate: int = 16000,
         blocksize: int = 8000,  # kept for API compatibility; computed from native rate now
         device: int | None = None,
+        on_partial=None,
+        on_final=None,
     ):
         if _IMPORT_ERROR is not None:
             raise WakeWordError(
@@ -56,6 +58,8 @@ class WakeWordListener:
 
         self.keyword = keyword.strip().lower()
         self.target_rate = samplerate
+        self._on_partial = on_partial
+        self._on_final = on_final
 
         try:
             self.device, self.native_rate = pick_input_device(device)
@@ -133,7 +137,17 @@ class WakeWordListener:
     def _consume(self, data: bytes) -> None:
         if self._recognizer.AcceptWaveform(data):
             text = json.loads(self._recognizer.Result()).get("text", "")
+            if text and self._on_final:
+                try:
+                    self._on_final(text)
+                except Exception:
+                    pass
         else:
             text = json.loads(self._recognizer.PartialResult()).get("partial", "")
+            if text and self._on_partial:
+                try:
+                    self._on_partial(text)
+                except Exception:
+                    pass
         if self.keyword in text.lower():
             self._activated.set()

@@ -32,6 +32,7 @@ from quality import (
     shift_matches_direction,
 )
 from blink import BlinkChecker
+from transcript import Transcript, compose_with_camera
 from tts import make_backend
 from wake_word import WakeWordError, WakeWordListener
 
@@ -110,9 +111,10 @@ class Greeter:
     many people are in frame. Keeps a per-emp_id timestamp so the same
     person isn't re-greeted while they linger."""
 
-    def __init__(self):
+    def __init__(self, transcript: "Transcript | None" = None):
         self.backend = make_backend()
         self._last_greeted: dict[str, float] = {}
+        self.transcript = transcript
         if config.AUDIO_OUTPUT_DEVICE:
             print(f"[TTS] routing audio to ALSA device: {config.AUDIO_OUTPUT_DEVICE}")
 
@@ -124,11 +126,15 @@ class Greeter:
         self._last_greeted[emp_id] = now
         msg = f"Hello {name}, welcome!"
         print(f"[GREET] {msg}")
+        if self.transcript:
+            self.transcript.add("tts", msg)
         self.backend.speak(msg)
         return True
 
     def say(self, text: str):
         print(f"[TTS] {text}")
+        if self.transcript:
+            self.transcript.add("tts", text)
         self.backend.speak(text)
 
     def reset_last(self):
@@ -332,14 +338,22 @@ def main():
 
     pipe = HailoFacePipeline(config.DETECTOR_HEF, config.EMBEDDER_HEF)
     db = FaceDB()
-    greeter = Greeter()
+    transcript = Transcript(max_events=config.TRANSCRIPT_MAX_EVENTS) \
+        if config.SHOW_TRANSCRIPT_PANEL else None
+    greeter = Greeter(transcript=transcript)
     cam = open_camera()
     liveness = LivenessChecker()
     learner = SilentLearner(db)
     blinker = BlinkChecker(pipe, grab_frame, draw_hud)
+    if transcript is not None:
+        transcript.add("system", "starting up")
 
     listener: WakeWordListener | None = None
     state = "ACTIVE" if args.no_wake_word else "IDLE"
+
+    on_partial_cb = (lambda t: transcript.add("partial", t)) if transcript else None
+    on_final_cb   = (lambda t: transcript.add("heard", t))   if transcript else None
+
     if not args.no_wake_word:
         try:
             listener = WakeWordListener(
@@ -347,9 +361,13 @@ def main():
                 config.WAKE_WORD,
                 samplerate=config.WAKE_WORD_SAMPLERATE,
                 blocksize=config.WAKE_WORD_BLOCKSIZE,
+                on_partial=on_partial_cb,
+                on_final=on_final_cb,
             )
             listener.start()
             print(f"[wake-word] listening for: '{config.WAKE_WORD}'")
+            if transcript:
+                transcript.add("system", f"listening for '{config.WAKE_WORD}'")
         except WakeWordError as exc:
             print(f"[wake-word] disabled: {exc}")
             print("[wake-word] starting in ACTIVE state. Use --no-wake-word to silence this.")
@@ -382,6 +400,9 @@ def main():
                 greeter.reset_last()
                 liveness.reset()
                 blink_confirmed.clear()
+                if transcript:
+                    transcript.add("wake", config.WAKE_WORD)
+                    transcript.add("state", "IDLE -> ACTIVE")
                 greeter.say("Hello. I am ready.")
                 print("[state] IDLE -> ACTIVE")
 
@@ -453,15 +474,19 @@ def main():
                             g for g in pending_greets if g[1] in blink_confirmed
                         ]
 
-                for _, emp_id, name, _, _ in pending_greets:
+                for _, emp_id, name, _, score in pending_greets:
                     if greeter.greet(emp_id, name):
                         last_interaction_at = time.time()
+                        if transcript:
+                            transcript.add("match", f"{name} ({score:.2f})")
 
                 if biggest_quality_unknown:
                     # Someone unfamiliar is in frame -- keep awake while we
                     # build up to the registration trigger.
                     last_interaction_at = time.time()
                     unknown_streak += 1
+                    if transcript and unknown_streak == 1:
+                        transcript.add("unknown", "new face seen")
                 else:
                     unknown_streak = 0
 
@@ -488,6 +513,8 @@ def main():
                         liveness.reset()
                         greeter.reset_last()
                         listener.deactivate()
+                        if transcript:
+                            transcript.add("state", f"ACTIVE -> IDLE ({idle_for:.0f}s)")
                         print(f"[state] ACTIVE -> IDLE (idle for {idle_for:.0f}s)")
 
             # ---- HUD ---------------------------------------------------
@@ -520,7 +547,12 @@ def main():
 
                 draw_hud(frame, dets, lambda d: labels.get(dets.index(d), ""),
                          banner=banner, status=status)
-                cv2.imshow("Face Recognition", frame)
+                if transcript is not None:
+                    panel = transcript.render(frame.shape[0], config.TRANSCRIPT_PANEL_WIDTH)
+                    composed = compose_with_camera(frame, panel)
+                    cv2.imshow("Face Recognition", composed)
+                else:
+                    cv2.imshow("Face Recognition", frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break

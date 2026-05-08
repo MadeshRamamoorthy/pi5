@@ -81,6 +81,7 @@ deleted-cascade so removing an employee also drops their face data.
 | `blink.py`        | Active liveness: blink challenge gating per-session |
 | `tts.py`          | TTS backend abstraction (Piper / pyttsx3) with WAV prebuffer |
 | `wake_word.py`    | Vosk-based "hello echo" listener (background thread, mic) |
+| `transcript.py`   | Side-panel event log: mic, TTS, recognition, state |
 | `main.py`         | Live loop + IDLE/ACTIVE state machine, multi-face greet |
 | `enroll.py`       | Pre-enrol an employee from N camera frames (no live loop) |
 | `admin.py`        | CLI: list / show / delete / export DB entries |
@@ -489,6 +490,12 @@ What happens:
 - **All recognised faces are greeted**, not just the largest one. Each
   emp_id is rate-limited to one greeting per `GREET_COOLDOWN_SEC` so
   someone walking back and forth doesn't trigger repeats.
+- The window is split: **camera on the left, live transcript on the
+  right**. The right panel logs mic input (Vosk partials + finals),
+  wake-word triggers, TTS output, recognition events, liveness
+  decisions, and IDLE↔ACTIVE transitions, each colour-coded and
+  timestamped. Disable with `SHOW_TRANSCRIPT_PANEL = False` if you'd
+  rather have just the camera view.
 - After `IDLE_AFTER_LAST_INTERACTION_SEC` (10 s) **with no new event**
   the system drops back to IDLE. "New event" means a different person
   greeted, or an unknown face standing in front of the camera. A
@@ -661,6 +668,14 @@ TTS:
 | `PIPER_MODEL_PATH`   | Path to the `.onnx` voice model |
 | `TTS_PREBUFFER_MS`   | Silence padded at the start of each utterance so USB speakerphones don't clip the first word (500). Set to 0 to disable. |
 | `AUDIO_OUTPUT_DEVICE` | ALSA name for the speaker (`"plughw:CARD=PowerConf,DEV=0"`). `None` = system default. |
+
+HUD transcript panel:
+
+| Setting | Effect |
+|---------|--------|
+| `SHOW_TRANSCRIPT_PANEL`   | Master switch. False keeps the camera-only window. |
+| `TRANSCRIPT_PANEL_WIDTH`  | Pixels added to the right of the camera (420). |
+| `TRANSCRIPT_MAX_EVENTS`   | Ring-buffer size; oldest events scroll out (24). |
 
 The HUD prints every signal alongside its threshold while liveness is
 failing, e.g. `motion=0.32/0.45  jitter=3.2/4.0  glare=18%/10%

@@ -32,6 +32,14 @@ GREET_COOLDOWN_SEC = 60
 CAMERA_RESOLUTION = (1280, 720)
 CAMERA_FRAMERATE = 30
 
+# ---- HUD: side transcript panel ------------------------------------------
+# When True, the OpenCV window is split: camera on the left, a live
+# transcript of mic input + TTS output + recognition / state events on
+# the right. Set False to keep the simple camera-only window.
+SHOW_TRANSCRIPT_PANEL = True
+TRANSCRIPT_PANEL_WIDTH = 420       # pixels added to the right of the camera
+TRANSCRIPT_MAX_EVENTS = 24         # ring-buffer length
+
 # ---- Face quality gate ---------------------------------------------------
 # A "real" face must clear ALL of these before recognition / registration.
 QUALITY_SCORE_THRESHOLD = 0.70    # min detector score (overrides DETECTOR_SCORE_THRESHOLD for gating)
