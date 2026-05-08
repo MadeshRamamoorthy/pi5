@@ -14,6 +14,9 @@ import os
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
 
 import argparse
+import os
+import subprocess
+import tempfile
 import time
 
 import cv2
@@ -63,26 +66,56 @@ def largest_detection(dets):
 
 
 class Greeter:
-    """Speaks once per person change. Same emp_id back-to-back stays silent."""
+    """Speaks once per person change. Same emp_id back-to-back stays silent.
+
+    If config.AUDIO_OUTPUT_DEVICE is set, TTS audio is routed through
+    `aplay -D <device>` so the greeting plays on the chosen sink (e.g. the
+    Anker) instead of the system default (typically HDMI on the Pi).
+    """
 
     def __init__(self):
         self.engine = pyttsx3.init()
         self.engine.setProperty("rate", 170)
         self._last_greeted: str | None = None
+        self._device = config.AUDIO_OUTPUT_DEVICE
+        if self._device:
+            print(f"[TTS] routing audio to ALSA device: {self._device}")
 
-    def greet(self, emp_id: str, name: str):
-        if emp_id == self._last_greeted:
+    def _speak(self, text: str) -> None:
+        if not self._device:
+            self.engine.say(text)
+            self.engine.runAndWait()
             return
+        # Synth to a WAV, then play it on the chosen device. Bypasses
+        # whatever the system default sink is.
+        fd, path = tempfile.mkstemp(suffix=".wav", prefix="tts_")
+        os.close(fd)
+        try:
+            self.engine.save_to_file(text, path)
+            self.engine.runAndWait()
+            subprocess.run(
+                ["aplay", "-q", "-D", self._device, path],
+                check=False,
+            )
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def greet(self, emp_id: str, name: str) -> bool:
+        """Returns True iff we actually spoke (i.e. emp_id changed)."""
+        if emp_id == self._last_greeted:
+            return False
         self._last_greeted = emp_id
         msg = f"Hello {name}, welcome!"
         print(f"[GREET] {msg}")
-        self.engine.say(msg)
-        self.engine.runAndWait()
+        self._speak(msg)
+        return True
 
     def say(self, text: str):
         print(f"[TTS] {text}")
-        self.engine.say(text)
-        self.engine.runAndWait()
+        self._speak(text)
 
     def reset_last(self):
         self._last_greeted = None
@@ -311,7 +344,10 @@ def main():
     print(f"Initial state: {state}")
 
     unknown_streak = 0
-    last_live_face_at = 0.0
+    # Resets on any "new" event (different person greeted, an unknown face is
+    # in frame, registration completed). Same recognised person standing in
+    # frame does NOT count as new -- we still time out and go IDLE.
+    last_interaction_at = 0.0
     activated_at = 0.0
     banner_idle = f"Say '{config.WAKE_WORD}' to start recognition"
 
@@ -323,7 +359,7 @@ def main():
             if state == "IDLE" and listener is not None and listener.is_activated():
                 state = "ACTIVE"
                 activated_at = time.time()
-                last_live_face_at = activated_at
+                last_interaction_at = activated_at
                 listener.deactivate()
                 greeter.reset_last()
                 liveness.reset()
@@ -357,16 +393,18 @@ def main():
                     if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
                         labels[i] = f"{names[idx]} ({score:.2f})"
                         if det is biggest:
-                            greeter.greet(emp_ids[idx], names[idx])
+                            # greet() returns True only on a *new* person.
+                            if greeter.greet(emp_ids[idx], names[idx]):
+                                last_interaction_at = time.time()
                     else:
                         labels[i] = f"unknown ({score:.2f})"
                         if det is biggest:
                             biggest_quality_unknown = True
 
-                if biggest_is_live:
-                    last_live_face_at = time.time()
-
                 if biggest_quality_unknown:
+                    # Someone unfamiliar is in frame -- keep awake while we
+                    # build up to the registration trigger.
+                    last_interaction_at = time.time()
                     unknown_streak += 1
                 else:
                     unknown_streak = 0
@@ -378,9 +416,12 @@ def main():
                     unknown_streak = 0
                     if prompt_registration(db, greeter, cam, pipe, show_preview):
                         emp_ids, names, matrix = db.load_all()
+                    last_interaction_at = time.time()
 
                 # ---- ACTIVE -> IDLE timeouts ---------------------------
-                idle_for = time.time() - last_live_face_at if last_live_face_at else 0
+                # 30s after the last *new* event -- a recognised person who
+                # just stands there does NOT keep the system awake.
+                idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
                 if (
                     idle_for >= config.SLEEP_AFTER_NO_LIVE_FACE_SEC
                     or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)
@@ -390,7 +431,7 @@ def main():
                         liveness.reset()
                         greeter.reset_last()
                         listener.deactivate()
-                        print("[state] ACTIVE -> IDLE")
+                        print(f"[state] ACTIVE -> IDLE (idle for {idle_for:.0f}s)")
 
             # ---- HUD ---------------------------------------------------
             if show_preview:
@@ -421,6 +462,7 @@ def main():
                 if key == ord("r") and state == "ACTIVE":
                     if prompt_registration(db, greeter, cam, pipe, show_preview):
                         emp_ids, names, matrix = db.load_all()
+                    last_interaction_at = time.time()
     finally:
         if listener is not None:
             listener.stop()

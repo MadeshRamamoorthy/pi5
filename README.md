@@ -211,11 +211,57 @@ python -c "import hailo_platform, picamera2, cv2, numpy, pyttsx3; \
 
 ```bash
 sudo apt install -y espeak-ng alsa-utils
-aplay -l                                          # find your output device
-aplay /usr/share/sounds/alsa/Front_Center.wav    # quick test
+aplay -l                                          # find output devices
+aplay /usr/share/sounds/alsa/Front_Center.wav    # default-device test
 ```
 
-Use `raspi-config` → System → Audio to set the default sink (HDMI / 3.5 mm).
+You have two ways to send TTS to a specific output (e.g. an Anker A3301
+USB speakerphone instead of HDMI):
+
+**Option A — make the device the system default (everything follows).**
+
+PipeWire (Trixie default):
+
+```bash
+sudo apt install -y wireplumber
+wpctl status                                      # find the sink ID for the Anker
+wpctl set-default <SINK_ID>
+```
+
+PulseAudio compat layer:
+
+```bash
+sudo apt install -y pulseaudio-utils
+pactl list short sinks
+pactl set-default-sink <sink-name>
+```
+
+`raspi-config` → System → Audio also works for HDMI / headphone jack.
+
+**Option B — pin only this app's TTS, leave system audio alone.**
+
+Find an ALSA name for the Anker:
+
+```bash
+aplay -L | grep -B1 -i anker
+# example match:
+#   plughw:CARD=A3301,DEV=0
+#       Anker PowerConf A3301, USB Audio
+```
+
+Then in `config.py`:
+
+```python
+AUDIO_OUTPUT_DEVICE = "plughw:CARD=A3301,DEV=0"   # or "plughw:2,0"
+```
+
+The Greeter synthesises TTS to a temp WAV and plays it via `aplay -D
+<device>`, so the route is independent of whatever the system default is.
+Quick verification:
+
+```bash
+aplay -D plughw:CARD=A3301,DEV=0 /usr/share/sounds/alsa/Front_Center.wav
+```
 
 ### 2.7 Get the Hailo-10H HEF models
 
@@ -326,8 +372,12 @@ What happens:
   `checking liveness... (static (photo?))`. This blocks held-up photos
   and still images on a phone screen. (Video replay can still spoof —
   see "Limitations" below.)
-- After `SLEEP_AFTER_NO_LIVE_FACE_SEC` (30 s) without any live face, the
-  system drops back to IDLE and waits for the wake word again.
+- After `SLEEP_AFTER_NO_LIVE_FACE_SEC` (30 s) **with no new event** the
+  system drops back to IDLE. "New event" means a different person
+  greeted, or an unknown face standing in front of the camera. A
+  recognised person who keeps standing there does NOT keep the system
+  awake — the timer counts down anyway. Saying "hello echo" again wakes
+  it back up.
 - An unknown but high-quality, **live** face must persist for
   `UNKNOWN_FRAMES_BEFORE_REGISTER` consecutive frames (~half a second)
   before registration is offered. The counter is shown on screen.

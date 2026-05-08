@@ -63,6 +63,16 @@ POSE_CAPTURE_TIMEOUT_SEC = 8.0 # give up on this pose if user doesn't comply
 # same person before we append samples to an existing emp_id.
 REREGISTER_MATCH_THRESHOLD = 0.35
 
+# ---- Audio output for TTS -------------------------------------------------
+# None  -> use system default audio sink (HDMI / 3.5 mm / whatever PipeWire
+#          decides). To pin TTS to the Anker (or any specific output), set
+#          this to an ALSA name from `aplay -L`, e.g.:
+#            "plughw:CARD=A3301,DEV=0"
+#            "plughw:2,0"
+# When set, pyttsx3 synthesises to a temporary WAV and aplay plays it on
+# the chosen device, so this works even when the system default is HDMI.
+AUDIO_OUTPUT_DEVICE: str | None = None
+
 # ---- Wake-word / activation -----------------------------------------------
 WAKE_WORD = "hello echo"          # phrase that activates recognition
 WAKE_WORD_SAMPLERATE = 16000
