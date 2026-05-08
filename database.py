@@ -77,6 +77,31 @@ class FaceDB:
         ).fetchone()
         return row is not None
 
+    def get_name(self, emp_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT name FROM employees WHERE emp_id = ?", (emp_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def list_employees(self):
+        """Return [(emp_id, name, sample_count, created_at)] sorted by emp_id."""
+        return self.conn.execute(
+            """
+            SELECT e.emp_id, e.name, COUNT(f.id), e.created_at
+            FROM employees e
+            LEFT JOIN face_embeddings f ON f.emp_id = e.emp_id
+            GROUP BY e.emp_id
+            ORDER BY e.emp_id
+            """
+        ).fetchall()
+
+    def delete_employee(self, emp_id: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM employees WHERE emp_id = ?", (emp_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
 
 def _to_blob(vec: np.ndarray) -> bytes:
     return np.asarray(vec, dtype=np.float32).tobytes()

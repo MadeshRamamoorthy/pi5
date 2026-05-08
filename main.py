@@ -30,16 +30,17 @@ def cosine_match(query: np.ndarray, matrix: np.ndarray):
 
 
 class Greeter:
+    """Speaks once per person change. Same emp_id back-to-back stays silent."""
+
     def __init__(self):
         self.engine = pyttsx3.init()
         self.engine.setProperty("rate", 170)
-        self._last = {}  # emp_id -> timestamp
+        self._last_greeted_emp_id: str | None = None
 
     def greet(self, emp_id: str, name: str):
-        now = time.time()
-        if now - self._last.get(emp_id, 0) < config.GREET_COOLDOWN_SEC:
+        if emp_id == self._last_greeted_emp_id:
             return
-        self._last[emp_id] = now
+        self._last_greeted_emp_id = emp_id
         msg = f"Hello {name}, welcome!"
         print(f"[GREET] {msg}")
         self.engine.say(msg)
@@ -49,6 +50,9 @@ class Greeter:
         print(f"[TTS] {text}")
         self.engine.say(text)
         self.engine.runAndWait()
+
+    def reset_last(self):
+        self._last_greeted_emp_id = None
 
 
 def open_camera() -> Picamera2:
@@ -63,9 +67,8 @@ def open_camera() -> Picamera2:
 
 
 def grab_frame(cam: Picamera2) -> np.ndarray:
-    """picamera2 'RGB888' actually returns BGR-ordered bytes on libcamera, so
-    the array is already in the BGR layout that cv2 / our model wrappers expect.
-    Returning it as-is avoids a double channel-swap (which discolours the preview).
+    """picamera2 'RGB888' actually delivers BGR-ordered bytes on libcamera, so
+    the array already matches what cv2 / our model wrappers expect.
     """
     return cam.capture_array()
 
@@ -76,46 +79,82 @@ def largest_detection(dets):
     return max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
 
 
-def capture_embeddings(
+def _annotate(frame, dets, prompt: str, captured: int, total: int):
+    for d in dets:
+        x1, y1, x2, y2 = (int(v) for v in d.bbox)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
+    cv2.putText(
+        frame,
+        f"[{captured}/{total}] {prompt}",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 200, 255),
+        2,
+    )
+
+
+def capture_with_prompts(
     cam: Picamera2,
     pipe: HailoFacePipeline,
-    n_frames: int,
-    interval_ms: int,
+    greeter: Greeter,
     show_preview: bool,
 ) -> list[np.ndarray]:
-    """Capture n_frames embeddings of the largest face, showing live progress."""
+    """Voice-guided multi-pose capture. One embedding per prompt."""
     embeddings: list[np.ndarray] = []
-    while len(embeddings) < n_frames:
-        frame = grab_frame(cam)
-        dets = pipe.detect(
-            frame,
-            config.DETECTOR_SCORE_THRESHOLD,
-            config.DETECTOR_NMS_IOU,
-        )
-        det = largest_detection(dets)
-        if det is not None:
-            aligned = align_face(frame, det.landmarks)
-            embeddings.append(pipe.embed(aligned))
+    prompts = config.POSE_PROMPTS
+    for i, prompt in enumerate(prompts, start=1):
+        greeter.say(prompt)
+        # Live preview while the user moves into the new pose.
+        settle_until = time.time() + config.POSE_HOLD_SEC
+        while time.time() < settle_until:
+            frame = grab_frame(cam)
+            if show_preview:
+                dets_preview = pipe.detect(
+                    frame,
+                    config.DETECTOR_SCORE_THRESHOLD,
+                    config.DETECTOR_NMS_IOU,
+                )
+                _annotate(frame, dets_preview, prompt, len(embeddings), len(prompts))
+                cv2.imshow("Face Recognition", frame)
+                cv2.waitKey(30)
 
-        if show_preview:
-            for d in dets:
-                x1, y1, x2, y2 = (int(v) for v in d.bbox)
-                colour = (0, 200, 255) if d is det else (90, 90, 90)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-            cv2.putText(
+        # Now try to grab one good face within the timeout.
+        deadline = time.time() + config.POSE_CAPTURE_TIMEOUT_SEC
+        captured = False
+        while not captured and time.time() < deadline:
+            frame = grab_frame(cam)
+            dets = pipe.detect(
                 frame,
-                f"Registering... {len(embeddings)}/{n_frames}  (move your head a bit)",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 200, 255),
-                2,
+                config.DETECTOR_SCORE_THRESHOLD,
+                config.DETECTOR_NMS_IOU,
             )
-            cv2.imshow("Face Recognition", frame)
-            cv2.waitKey(interval_ms)
-        else:
-            time.sleep(interval_ms / 1000.0)
+            det = largest_detection(dets)
+            if det is not None:
+                aligned = align_face(frame, det.landmarks)
+                embeddings.append(pipe.embed(aligned))
+                captured = True
+            if show_preview:
+                _annotate(frame, dets, prompt, len(embeddings), len(prompts))
+                cv2.imshow("Face Recognition", frame)
+                cv2.waitKey(30)
+        if not captured:
+            greeter.say("I could not see your face clearly. Skipping this one.")
     return embeddings
+
+
+def best_self_match(embeddings, db_ids, db_matrix, emp_id):
+    """Return the best cosine score of `embeddings` against the rows of
+    `db_matrix` whose emp_id == emp_id. -1 if that emp_id has no rows."""
+    mask = np.array([eid == emp_id for eid in db_ids], dtype=bool)
+    if not mask.any():
+        return -1.0
+    sub = db_matrix[mask]
+    best = -1.0
+    for emb in embeddings:
+        sims = sub @ emb
+        best = max(best, float(sims.max()))
+    return best
 
 
 def prompt_registration(
@@ -124,40 +163,57 @@ def prompt_registration(
     cam: Picamera2,
     pipe: HailoFacePipeline,
     show_preview: bool,
-    first_embedding: np.ndarray,
 ) -> bool:
-    """Ask via stdin for emp_id + name, capture additional samples, persist."""
     greeter.say("I do not recognise you. Please register at the console.")
     print("\n--- New face detected ---")
     emp_id = input("Employee ID: ").strip()
     if not emp_id:
         print("Skipped.")
         return False
-    name = input("Name: ").strip()
-    if not name:
-        print("Skipped.")
+
+    is_existing = db.employee_exists(emp_id)
+    if is_existing:
+        name = db.get_name(emp_id) or ""
+        print(f"Employee {emp_id} already exists ({name}). Will verify and append.")
+    else:
+        name = input("Name: ").strip()
+        if not name:
+            print("Skipped.")
+            return False
+
+    embeddings = capture_with_prompts(cam, pipe, greeter, show_preview)
+    if not embeddings:
+        greeter.say("Registration failed. No face captured.")
         return False
 
-    greeter.say(
-        f"Capturing {config.REGISTRATION_FRAMES} samples. "
-        "Please slowly turn your head left, right, up and down."
-    )
-    extra = capture_embeddings(
-        cam,
-        pipe,
-        n_frames=max(config.REGISTRATION_FRAMES - 1, 0),
-        interval_ms=config.REGISTRATION_INTERVAL_MS,
-        show_preview=show_preview,
-    )
-    embeddings = [first_embedding, *extra]
-
-    if db.employee_exists(emp_id):
+    if is_existing:
+        emp_ids, _, matrix = db.load_all()
+        score = best_self_match(embeddings, emp_ids, matrix, emp_id)
+        if score < config.REREGISTER_MATCH_THRESHOLD:
+            greeter.say(
+                "This face does not match the existing employee. "
+                "Registration refused."
+            )
+            print(
+                f"Refused: best self-match {score:.2f} < "
+                f"{config.REREGISTER_MATCH_THRESHOLD:.2f}"
+            )
+            return False
         for emb in embeddings:
             db.add_embedding(emp_id, emb)
+        greeter.say(f"Added {len(embeddings)} new samples for {name}.")
+        print(
+            f"Re-registered {name} ({emp_id}): +{len(embeddings)} samples "
+            f"(self-match {score:.2f}).\n"
+        )
     else:
         db.add_employee(emp_id, name, embeddings)
-    greeter.say(f"Thank you {name}, you are now registered.")
-    print(f"Registered {name} ({emp_id}) with {len(embeddings)} samples.\n")
+        greeter.say(f"Thank you {name}, you are now registered.")
+        print(f"Registered {name} ({emp_id}) with {len(embeddings)} samples.\n")
+
+    # The next live frame might match this newly-enrolled person — make sure
+    # we actually greet them rather than treating it as "same as last".
+    greeter.reset_last()
     return True
 
 
@@ -226,9 +282,7 @@ def main():
                         and time.time() - last_unknown_prompt > 5
                     ):
                         last_unknown_prompt = time.time()
-                        if prompt_registration(
-                            db, greeter, cam, pipe, show_preview, emb
-                        ):
+                        if prompt_registration(db, greeter, cam, pipe, show_preview):
                             emp_ids, names, matrix = db.load_all()
 
             if show_preview:
@@ -237,12 +291,8 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
-                if key == ord("r") and biggest is not None:
-                    aligned = align_face(frame, biggest.landmarks)
-                    emb = pipe.embed(aligned)
-                    if prompt_registration(
-                        db, greeter, cam, pipe, show_preview, emb
-                    ):
+                if key == ord("r"):
+                    if prompt_registration(db, greeter, cam, pipe, show_preview):
                         emp_ids, names, matrix = db.load_all()
     finally:
         cam.stop()

@@ -21,9 +21,20 @@ EMBEDDING_DIM = 512
 COSINE_MATCH_THRESHOLD = 0.38  # ArcFace: 0.35-0.45 typical; lower => looser match
 GREET_COOLDOWN_SEC = 10        # don't repeat greeting for the same person
 
-# Registration
-REGISTRATION_FRAMES = 5        # how many embeddings to capture per new person
-REGISTRATION_INTERVAL_MS = 400 # wait between capture frames (lets you change pose)
+# Registration: one prompt per pose, one embedding per prompt
+POSE_PROMPTS = [
+    "Look straight at the camera.",
+    "Slowly shift to your right.",
+    "Now shift to your left.",
+    "Tilt your head up.",
+    "Tilt your head down.",
+]
+POSE_HOLD_SEC = 1.2            # time given to settle in the new pose
+POSE_CAPTURE_TIMEOUT_SEC = 4.0 # max wait per pose before giving up
+
+# How permissive the re-registration "is this really the same person?" check is.
+# Same scale as COSINE_MATCH_THRESHOLD.
+REREGISTER_MATCH_THRESHOLD = 0.35
 
 # Camera
 CAMERA_RESOLUTION = (1280, 720)
