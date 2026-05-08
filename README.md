@@ -660,10 +660,10 @@ shows which backend is live:
 - `OpenAI · gpt-4o-mini` when `OPENAI_API_KEY` is set and
   `api.openai.com` is reachable.
 - `Ollama (local) · qwen3:1.7b` when local Hailo-Ollama is running on
-  `localhost:11434` and the model is pulled
+  `localhost:8080` and the model is pulled
   (see https://www.raspberrypi.com/documentation/computers/ai.html).
-  `start.sh` will probe the API on launch and auto-start the service /
-  daemon if it's not already up.
+  `start.sh` will probe the API on launch and run `hailo-ollama serve`
+  in the background if it's not already up.
 - `Chat unavailable — no backend reachable` when neither works.
 
 Each emp_id gets `CHAT_MAX_QUESTIONS_PER_SESSION` questions (default
@@ -690,11 +690,12 @@ hailo-ollama pull qwen3:1.7b      # recommended for kiosk chat
 #  qwen2.5-coder:* -- code-tuned, weak at chat.)
 ```
 
-`start.sh` checks `localhost:11434/api/tags` on launch; if the daemon
-isn't up it tries `systemctl start hailo-ollama` / `ollama` and falls
-back to launching the binary directly. Failure is non-fatal — chat
-will simply route to OpenAI (or display "Chat unavailable" if neither
-is configured).
+`start.sh` checks `localhost:8080/api/tags` on launch; if the daemon
+isn't up it runs `hailo-ollama serve` in the background and waits up
+to 10 s for the API to come up (log at `/tmp/hailo-ollama.log`). If
+your build uses a different invocation, set `HAILO_OLLAMA_CMD` before
+calling `start.sh`. Failure is non-fatal — chat will simply route to
+OpenAI (or display "Chat unavailable" if neither is configured).
 
 Switch backend preference order in `config.py`:
 

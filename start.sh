@@ -80,53 +80,37 @@ export SD_DEVICE
 export AUDIO_OUTPUT_DEVICE
 export OPENAI_API_KEY
 
-# ---- Hailo-Ollama (local chat backend) -----------------------------------
-# Probe http://localhost:11434/api/tags. If the daemon isn't up, try the
-# usual service names, then fall back to launching the binary directly.
-# Failure here is non-fatal: chat falls back to OpenAI if OPENAI_API_KEY
-# is set, otherwise the CHAT tab will display "Chat unavailable".
-: "${OLLAMA_URL:=http://localhost:11434}"
+# ---- Hailo-Ollama (local fallback chat backend) --------------------------
+# Online OpenAI is the preferred backend. Hailo-Ollama is the offline
+# fallback -- runs LLM inference on the Hailo-10H, listens on port 8080.
+# We probe the API; if it's down we launch the binary in the background.
+# Failure here is non-fatal: chat just goes through OpenAI.
+: "${OLLAMA_URL:=http://localhost:8080}"
 ollama_up() { curl -sf -m 1 "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; }
 
 if ollama_up; then
     echo "   hailo-ollama : up at ${OLLAMA_URL}"
-else
-    echo "   hailo-ollama : not running, attempting to start..."
-    started=0
-    # 1. systemd (try a couple of common unit names; -n = no password prompt).
-    for svc in hailo-ollama ollama; do
-        if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
-            if sudo -n systemctl start "$svc" 2>/dev/null \
-               || systemctl --user start "$svc" 2>/dev/null; then
-                started=1
-                break
-            fi
-        fi
+elif command -v hailo-ollama >/dev/null 2>&1; then
+    echo "   hailo-ollama : not running, launching in background..."
+    : "${HAILO_OLLAMA_LOG:=/tmp/hailo-ollama.log}"
+    # `hailo-ollama serve` is the standard subcommand; if your build uses
+    # a different invocation, override it via HAILO_OLLAMA_CMD.
+    : "${HAILO_OLLAMA_CMD:=hailo-ollama serve}"
+    nohup $HAILO_OLLAMA_CMD >"$HAILO_OLLAMA_LOG" 2>&1 &
+    # Wait up to ~10 s for the API to answer.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        ollama_up && break
+        sleep 1
     done
-    # 2. Direct binary fallback.
-    if [[ $started -eq 0 ]]; then
-        for bin in hailo-ollama ollama; do
-            if command -v "$bin" >/dev/null 2>&1; then
-                nohup "$bin" serve >"/tmp/${bin}.log" 2>&1 &
-                started=1
-                break
-            fi
-        done
-    fi
-    # 3. Wait up to ~10 s for the API to answer.
-    if [[ $started -eq 1 ]]; then
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-            ollama_up && break
-            sleep 1
-        done
-    fi
     if ollama_up; then
-        echo "   hailo-ollama : up at ${OLLAMA_URL}"
+        echo "   hailo-ollama : up at ${OLLAMA_URL} (log: $HAILO_OLLAMA_LOG)"
     else
-        echo "   hailo-ollama : NOT reachable -- chat will use OpenAI only" >&2
-        echo "                  (start manually: 'hailo-ollama serve' or" >&2
-        echo "                   'sudo systemctl start hailo-ollama')" >&2
+        echo "   hailo-ollama : failed to start -- see $HAILO_OLLAMA_LOG" >&2
+        echo "                  chat will use OpenAI only (or be unavailable" >&2
+        echo "                  if OPENAI_API_KEY is unset)" >&2
     fi
+else
+    echo "   hailo-ollama : binary not found in PATH -- offline chat disabled" >&2
 fi
 
 # Probe X display reliably *after* venv activation -- uses libX11 via
