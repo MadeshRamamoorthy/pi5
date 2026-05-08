@@ -93,9 +93,9 @@ if ollama_up; then
 elif command -v hailo-ollama >/dev/null 2>&1; then
     echo "   hailo-ollama : not running, launching in background..."
     : "${HAILO_OLLAMA_LOG:=/tmp/hailo-ollama.log}"
-    # `hailo-ollama serve` is the standard subcommand; if your build uses
-    # a different invocation, override it via HAILO_OLLAMA_CMD.
-    : "${HAILO_OLLAMA_CMD:=hailo-ollama serve}"
+    # The Pi build runs the daemon by invoking the binary with no args.
+    # Override via HAILO_OLLAMA_CMD if your build uses a subcommand.
+    : "${HAILO_OLLAMA_CMD:=hailo-ollama}"
     nohup $HAILO_OLLAMA_CMD >"$HAILO_OLLAMA_LOG" 2>&1 &
     # Wait up to ~10 s for the API to answer.
     for _ in 1 2 3 4 5 6 7 8 9 10; do
