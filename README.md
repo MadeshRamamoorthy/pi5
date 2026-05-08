@@ -124,9 +124,10 @@ rpicam-hello -t 5000
 ### 2.4 Clone this repo and install Python deps
 
 ```bash
-cd ~
+mkdir -p /home/echo/Documents/code
+cd /home/echo/Documents/code
 git clone <your-fork-url> pi5
-cd pi5
+cd /home/echo/Documents/code/pi5
 python3 -m venv --system-site-packages .venv   # so picamera2 + hailo_platform are visible
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -157,10 +158,20 @@ installed (`pip install hailo-model-zoo`) you can grab the pre-compiled HEFs
 for the Hailo-10H target:
 
 ```bash
-mkdir -p models
-hailomz download scrfd_10g --hw-arch hailo10h --output-dir models
-hailomz download arcface_mobilefacenet --hw-arch hailo10h --output-dir models
+mkdir -p /home/echo/Documents/code/pi5/models
+cd /home/echo/Documents/code/pi5/models
+
+# Browse https://github.com/hailo-ai/hailo_model_zoo/releases and grab the
+# hailo10h HEFs (or download from the Hailo Developer Zone), then verify:
+ls -lh scrfd_10g.hef arcface_mobilefacenet.hef
+hailortcli run scrfd_10g.hef --measure-fps   # smoke test
 ```
+
+> The `hailo-model-zoo` package is **not on PyPI** — `pip install
+> hailo-model-zoo` will fail. Either install it from
+> `https://github.com/hailo-ai/hailo_model_zoo` (`git clone && pip install
+> -e .`) or, simpler on a Pi 5, just download the `.hef` files directly
+> from the Model Zoo releases page or the Hailo Developer Zone.
 
 If the filenames differ after download, either rename them to match
 `config.py` or edit `config.DETECTOR_HEF` / `config.EMBEDDER_HEF`.
@@ -229,9 +240,9 @@ After=multi-user.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/pi5
-ExecStart=/home/pi/pi5/.venv/bin/python /home/pi/pi5/main.py --auto-register --no-display
+User=echo
+WorkingDirectory=/home/echo/Documents/code/pi5
+ExecStart=/home/echo/Documents/code/pi5/.venv/bin/python /home/echo/Documents/code/pi5/main.py --auto-register --no-display
 Restart=on-failure
 
 [Install]
