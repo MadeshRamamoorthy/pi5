@@ -1,29 +1,19 @@
 """Hailo-10H inference wrappers for face detection (SCRFD) and embedding (ArcFace).
 
-Uses HailoRT's Python API. The HEF files are produced from the Hailo Model Zoo
-(see README). This module assumes single-stream synchronous inference, which is
-plenty for a webcam-rate application on a Pi 5 + Hailo-10H.
+Uses the HailoRT 5.x InferModel async API (the legacy VDevice.configure path
+is not implemented for Hailo-10H). The HEF files come from the Hailo Model
+Zoo / Application Code Examples (see README).
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from hailo_platform import (
-    HEF,
-    ConfigureParams,
-    FormatType,
-    HailoStreamInterface,
-    InferVStreams,
-    InputVStreamParams,
-    OutputVStreamParams,
-    VDevice,
-)
+from hailo_platform import HEF, FormatType, VDevice
 
 
 @dataclass
@@ -34,31 +24,46 @@ class Detection:
 
 
 class _HailoModel:
-    """Minimal single-network HEF runner."""
+    """Single HEF wrapped as a configured InferModel with pre-bound buffers."""
 
     def __init__(self, hef_path: Path, vdevice: VDevice):
-        self.hef = HEF(str(hef_path))
-        cfg = ConfigureParams.create_from_hef(
-            hef=self.hef, interface=HailoStreamInterface.PCIe
-        )
-        self.network_group = vdevice.configure(self.hef, cfg)[0]
-        self.network_params = self.network_group.create_params()
-        self.input_params = InputVStreamParams.make(
-            self.network_group, format_type=FormatType.UINT8
-        )
-        self.output_params = OutputVStreamParams.make(
-            self.network_group, format_type=FormatType.FLOAT32
-        )
-        info = self.hef.get_input_vstream_infos()[0]
-        self.input_name = info.name
-        self.input_shape = info.shape  # (H, W, C)
+        self.infer_model = vdevice.create_infer_model(str(hef_path))
+        self.infer_model.set_batch_size(1)
 
-    def infer(self, frame: np.ndarray) -> dict:
-        with InferVStreams(
-            self.network_group, self.input_params, self.output_params
-        ) as pipeline:
-            with self.network_group.activate(self.network_params):
-                return pipeline.infer({self.input_name: frame[None, ...]})
+        # We feed UINT8 image data and want dequantised FLOAT32 outputs for
+        # decoding in numpy.
+        self.infer_model.input().set_format_type(FormatType.UINT8)
+        for name in self.infer_model.output_names:
+            self.infer_model.output(name).set_format_type(FormatType.FLOAT32)
+
+        self.input_name = self.infer_model.input().name
+        self.input_shape = tuple(self.infer_model.input().shape)  # (H, W, C)
+        self.output_names = list(self.infer_model.output_names)
+        self.output_shapes = {
+            n: tuple(self.infer_model.output(n).shape) for n in self.output_names
+        }
+
+        self.configured = self.infer_model.configure()
+        self.bindings = self.configured.create_bindings()
+        self._output_buffers = {
+            n: np.empty(self.output_shapes[n], dtype=np.float32)
+            for n in self.output_names
+        }
+        for n, buf in self._output_buffers.items():
+            self.bindings.output(n).set_buffer(buf)
+
+    def infer(self, frame: np.ndarray) -> dict[str, np.ndarray]:
+        if frame.shape != self.input_shape:
+            raise ValueError(
+                f"input shape {frame.shape} does not match model {self.input_shape}"
+            )
+        if frame.dtype != np.uint8:
+            frame = frame.astype(np.uint8)
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
+        self.bindings.input().set_buffer(frame)
+        self.configured.run([self.bindings], 10000)  # ms timeout
+        return {n: buf.copy() for n, buf in self._output_buffers.items()}
 
 
 class HailoFacePipeline:
@@ -70,6 +75,14 @@ class HailoFacePipeline:
         self.embedder = _HailoModel(embedder_hef, self.vdevice)
 
     def close(self):
+        try:
+            self.detector.configured.shutdown()
+        except Exception:
+            pass
+        try:
+            self.embedder.configured.shutdown()
+        except Exception:
+            pass
         self.vdevice.release()
 
     # ---- Detection ----
@@ -85,7 +98,6 @@ class HailoFacePipeline:
         outputs = self.detector.infer(rgb)
         dets = _decode_scrfd(outputs, (in_w, in_h), score_threshold)
         dets = _nms(dets, nms_iou)
-        # un-letterbox to original coords
         for d in dets:
             x1, y1, x2, y2 = d.bbox
             d.bbox = (
@@ -99,9 +111,11 @@ class HailoFacePipeline:
 
     # ---- Embedding ----
     def embed(self, bgr_face_112: np.ndarray) -> np.ndarray:
+        in_h, in_w, _ = self.embedder.input_shape
+        if bgr_face_112.shape[:2] != (in_h, in_w):
+            bgr_face_112 = cv2.resize(bgr_face_112, (in_w, in_h))
         rgb = cv2.cvtColor(bgr_face_112, cv2.COLOR_BGR2RGB).astype(np.uint8)
         out = self.embedder.infer(rgb)
-        # ArcFace HEFs typically expose a single output
         emb = next(iter(out.values())).reshape(-1).astype(np.float32)
         n = np.linalg.norm(emb) + 1e-9
         return emb / n
@@ -123,22 +137,35 @@ def _letterbox(img: np.ndarray, dst_wh: tuple[int, int]):
     return canvas, scale, (pad_x, pad_y)
 
 
-# SCRFD strides and per-stride 2 anchors
 _STRIDES = (8, 16, 32)
 _ANCHORS_PER_LOC = 2
 
 
 def _decode_scrfd(outputs: dict, input_wh: tuple[int, int], score_thr: float):
-    """Decode SCRFD raw outputs into Detection list (in input image coords)."""
-    in_w, in_h = input_wh
-    # SCRFD heads come as 9 tensors: per stride [score, bbox, kps]
-    # Sort by spatial size (large->small) so we map to strides 8,16,32
-    arrs = [v[0] for v in outputs.values()]  # drop batch dim
+    """Decode SCRFD raw outputs into Detection list (in input image coords).
+
+    SCRFD has 9 output tensors: per stride [score, bbox, kps]. We sort by
+    spatial size (largest -> smallest) so the order maps to strides 8, 16, 32.
+    """
+    arrs = list(outputs.values())
     arrs.sort(key=lambda a: -a.shape[0] * a.shape[1])
     grouped = [arrs[i : i + 3] for i in range(0, len(arrs), 3)]
 
     dets: list[Detection] = []
-    for stride, (score_t, bbox_t, kps_t) in zip(_STRIDES, grouped):
+    for stride, group in zip(_STRIDES, grouped):
+        # Identify each tensor by channel count: score=2, bbox=8, kps=20
+        score_t = bbox_t = kps_t = None
+        for t in group:
+            c = t.shape[-1]
+            if c == 2:
+                score_t = t
+            elif c == 8:
+                bbox_t = t
+            elif c == 20:
+                kps_t = t
+        if score_t is None or bbox_t is None or kps_t is None:
+            continue
+
         h, w = score_t.shape[:2]
         scores = score_t.reshape(-1)
         bbox = bbox_t.reshape(-1, 4)
@@ -161,11 +188,12 @@ def _decode_scrfd(outputs: dict, input_wh: tuple[int, int], score_thr: float):
         y2 = ac[:, 1] + bb[:, 3]
         kp = kps[keep] * stride
         kp = kp.reshape(-1, 5, 2) + ac[:, None, :]
+        s_keep = scores[keep]
         for i in range(len(ac)):
             dets.append(
                 Detection(
                     bbox=(float(x1[i]), float(y1[i]), float(x2[i]), float(y2[i])),
-                    score=float(scores[keep][i]),
+                    score=float(s_keep[i]),
                     landmarks=kp[i].astype(np.float32),
                 )
             )
@@ -211,6 +239,5 @@ def align_face(bgr: np.ndarray, landmarks: np.ndarray) -> np.ndarray:
     """Affine-warp the face to 112x112 using 5-point similarity transform."""
     M, _ = cv2.estimateAffinePartial2D(landmarks, _ARCFACE_REF, method=cv2.LMEDS)
     if M is None:
-        # Fallback: simple bbox crop+resize (lower accuracy)
         return cv2.resize(bgr, (112, 112))
     return cv2.warpAffine(bgr, M, (112, 112), borderValue=0)
