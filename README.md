@@ -240,19 +240,20 @@ pactl set-default-sink <sink-name>
 
 **Option B — pin only this app's TTS, leave system audio alone.**
 
-Find an ALSA name for the Anker:
+Find an ALSA name for the Anker (`grep` doesn't match — the card label
+is `PowerConf`, not `Anker`):
 
 ```bash
-aplay -L | grep -B1 -i anker
+aplay -L | grep -B1 -iE 'powerconf|a3301|usb audio'
 # example match:
-#   plughw:CARD=A3301,DEV=0
-#       Anker PowerConf A3301, USB Audio
+#   plughw:CARD=PowerConf,DEV=0
+#       PowerConf, USB Audio
 ```
 
 Then in `config.py`:
 
 ```python
-AUDIO_OUTPUT_DEVICE = "plughw:CARD=A3301,DEV=0"   # or "plughw:2,0"
+AUDIO_OUTPUT_DEVICE = "plughw:CARD=PowerConf,DEV=0"   # or "plughw:2,0"
 ```
 
 The Greeter synthesises TTS to a temp WAV and plays it via `aplay -D
