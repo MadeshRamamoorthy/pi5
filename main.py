@@ -15,13 +15,10 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
 
 import argparse
 import os
-import subprocess
-import tempfile
 import time
 
 import cv2
 import numpy as np
-import pyttsx3
 from picamera2 import Picamera2
 
 import config
@@ -34,6 +31,7 @@ from quality import (
     landmarks_drift,
     shift_matches_direction,
 )
+from tts import make_backend
 from wake_word import WakeWordError, WakeWordListener
 
 
@@ -109,40 +107,16 @@ def largest_detection(dets):
 class Greeter:
     """Speaks once per person change. Same emp_id back-to-back stays silent.
 
-    If config.AUDIO_OUTPUT_DEVICE is set, TTS audio is routed through
-    `aplay -D <device>` so the greeting plays on the chosen sink (e.g. the
-    Anker) instead of the system default (typically HDMI on the Pi).
+    Uses the TTS backend selected by tts.make_backend() -- Piper if
+    installed, else pyttsx3. Audio is routed via config.AUDIO_OUTPUT_DEVICE
+    when set so greetings play on the chosen sink (e.g. the Anker).
     """
 
     def __init__(self):
-        self.engine = pyttsx3.init()
-        self.engine.setProperty("rate", 170)
+        self.backend = make_backend()
         self._last_greeted: str | None = None
-        self._device = config.AUDIO_OUTPUT_DEVICE
-        if self._device:
-            print(f"[TTS] routing audio to ALSA device: {self._device}")
-
-    def _speak(self, text: str) -> None:
-        if not self._device:
-            self.engine.say(text)
-            self.engine.runAndWait()
-            return
-        # Synth to a WAV, then play it on the chosen device. Bypasses
-        # whatever the system default sink is.
-        fd, path = tempfile.mkstemp(suffix=".wav", prefix="tts_")
-        os.close(fd)
-        try:
-            self.engine.save_to_file(text, path)
-            self.engine.runAndWait()
-            subprocess.run(
-                ["aplay", "-q", "-D", self._device, path],
-                check=False,
-            )
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        if config.AUDIO_OUTPUT_DEVICE:
+            print(f"[TTS] routing audio to ALSA device: {config.AUDIO_OUTPUT_DEVICE}")
 
     def greet(self, emp_id: str, name: str) -> bool:
         """Returns True iff we actually spoke (i.e. emp_id changed)."""
@@ -151,12 +125,12 @@ class Greeter:
         self._last_greeted = emp_id
         msg = f"Hello {name}, welcome!"
         print(f"[GREET] {msg}")
-        self._speak(msg)
+        self.backend.speak(msg)
         return True
 
     def say(self, text: str):
         print(f"[TTS] {text}")
-        self._speak(text)
+        self.backend.speak(text)
 
     def reset_last(self):
         self._last_greeted = None

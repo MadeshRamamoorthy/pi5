@@ -342,6 +342,59 @@ python -c "import sounddevice as sd; print(sd.query_devices())"
 export SD_DEVICE=<index>     # picked up automatically by sounddevice
 ```
 
+### 2.9 Better-sounding TTS with Piper (recommended)
+
+The default voice uses `pyttsx3` + `espeak-ng` — fast but robotic.
+**Piper** is a neural TTS engine that runs on-device and produces a much
+more natural voice. The app auto-detects whether Piper is installed; if
+not, it falls back to `pyttsx3` automatically. Skip this section to keep
+the espeak voice.
+
+Install both the binary and a voice model into the project:
+
+```bash
+cd /home/echo/Documents/code/pi5
+mkdir -p tools models/piper
+```
+
+**Binary** — grab the latest `piper_linux_aarch64.tar.gz` from
+https://github.com/rhasspy/piper/releases:
+
+```bash
+cd tools
+wget https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz
+tar -xzf piper_linux_aarch64.tar.gz
+rm piper_linux_aarch64.tar.gz
+# Tools layout: tools/piper/piper (the binary)
+cd ..
+```
+
+**Voice model** — Amy is a clear US-English female. Pick another from
+https://github.com/rhasspy/piper/blob/master/VOICES.md if you prefer a
+different voice/accent.
+
+```bash
+cd models/piper
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json
+cd ../..
+```
+
+**Smoke test** through the Anker (if you've pinned `AUDIO_OUTPUT_DEVICE`):
+
+```bash
+echo "Hello, this is Amy speaking." | tools/piper/piper \
+    --model models/piper/en_US-amy-medium.onnx \
+    --output_file /tmp/test.wav
+aplay -D plughw:CARD=PowerConf,DEV=0 /tmp/test.wav
+```
+
+`./start.sh` should now print `[TTS] using Piper voice: en_US-amy-medium.onnx`
+on launch instead of the espeak line. To switch voices, drop a different
+`.onnx` + `.onnx.json` pair into `models/piper/` and update
+`PIPER_MODEL_PATH` in `config.py`. To force the espeak voice anyway, set
+`TTS_BACKEND = "pyttsx3"` in `config.py`.
+
 ---
 
 ## 3. Using it

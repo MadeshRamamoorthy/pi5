@@ -64,6 +64,16 @@ POSE_CAPTURE_TIMEOUT_SEC = 8.0 # give up on this pose if user doesn't comply
 # same person before we append samples to an existing emp_id.
 REREGISTER_MATCH_THRESHOLD = 0.35
 
+# ---- TTS backend ----------------------------------------------------------
+# "piper"   -> neural Piper (much more natural). Falls back to pyttsx3
+#              automatically if the binary or voice model is missing.
+# "pyttsx3" -> espeak-ng. Robotic but always available.
+TTS_BACKEND = "piper"
+
+# Project-local Piper install. README §2.9 covers downloading both.
+PIPER_BIN = ROOT / "tools" / "piper" / "piper"
+PIPER_MODEL_PATH = MODELS_DIR / "piper" / "en_US-amy-medium.onnx"
+
 # ---- Audio output for TTS -------------------------------------------------
 # None  -> use system default audio sink (HDMI / 3.5 mm / whatever PipeWire
 #          decides). To pin TTS to the Anker (or any specific output), set
