@@ -4,6 +4,9 @@ ROOT = Path(__file__).resolve().parent
 MODELS_DIR = ROOT / "models"
 DB_PATH = ROOT / "faces.db"
 
+# Vosk wake-word model directory (download via README §2.8).
+VOSK_MODEL_DIR = MODELS_DIR / "vosk-model-small-en-us-0.15"
+
 # Hailo-10H compiled models (HEF). Download via the install guide.
 DETECTOR_HEF = MODELS_DIR / "scrfd_10g.hef"
 EMBEDDER_HEF = MODELS_DIR / "arcface_mobilefacenet.hef"
@@ -59,3 +62,24 @@ POSE_CAPTURE_TIMEOUT_SEC = 8.0 # give up on this pose if user doesn't comply
 # Re-register: the new face must self-match this strongly to count as the
 # same person before we append samples to an existing emp_id.
 REREGISTER_MATCH_THRESHOLD = 0.35
+
+# ---- Wake-word / activation -----------------------------------------------
+WAKE_WORD = "hello echo"          # phrase that activates recognition
+WAKE_WORD_SAMPLERATE = 16000
+WAKE_WORD_BLOCKSIZE = 8000
+# Auto-revert to idle after this many seconds with no live face detected.
+SLEEP_AFTER_NO_LIVE_FACE_SEC = 30
+# After waking, also auto-sleep this long after the last greeting (back-stop).
+ACTIVE_SESSION_MAX_SEC = 600
+
+# ---- Liveness (passive anti-spoofing) -------------------------------------
+# Sliding window length over which we compute liveness signals.
+LIVENESS_WINDOW_FRAMES = 24
+# Min per-frame face crop size used by the pixel-jitter check.
+LIVENESS_CROP_PX = 96
+# Two signals must both clear their thresholds for a face to be "live":
+# 1. relative landmark motion (subtracting whole-face translation, so a
+#    waved photo is not enough -- micro-jitter of features is required).
+LIVENESS_REL_MOTION_MIN = 0.45    # pixels (std), in original-image scale
+# 2. face-region pixel jitter beyond camera read noise.
+LIVENESS_PIXEL_JITTER_MIN = 4.0   # mean abs frame-to-frame diff in [0..255]

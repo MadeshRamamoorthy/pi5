@@ -8,6 +8,10 @@ they're a real face, not a hand or partial detection — trigger a
 voice-guided registration that captures the person from five poses and
 stores them in a local SQLite database.
 
+The system idles until it hears the wake phrase **"hello echo"**, then runs
+a passive liveness check before recognising or greeting anyone — so a
+printed photo or a phone screen with a still image won't open the door.
+
 This repo was developed and tested on a Pi 5 running Raspberry Pi OS
 (Trixie / Python 3.13), HailoRT 5.3.0, and the H10 PCIe driver 5.x. Working
 directory in the steps below is `/home/echo/Documents/code/pi5` — adjust to
@@ -16,15 +20,28 @@ your username/path.
 ## How it works
 
 ```
+                      ┌─────────────────────────────────────┐
+                      │  Vosk wake-word listener (mic)      │
+                      │  hears "hello echo" → wake() event  │
+                      └──────────────────┬──────────────────┘
+                                         ▼
+                       state machine:  IDLE ─wake─▶ ACTIVE
+                                          ▲           │
+                                          └─ no live ─┘
+                                             face for 30s
  Pi AI Camera (IMX500)
-        │   picamera2  RGB888 (libcamera quirk: bytes are BGR-ordered)
+        │  picamera2  RGB888 (libcamera quirk: bytes are BGR-ordered)
         ▼
  BGR frame ─▶ Hailo-10H ─▶ SCRFD face detect (640x640)
                               │ bbox + 5 landmarks per face
                               ▼
-                  Quality gate (score, size, frame edge,
-                                eye distance, head roll)
+                  Quality gate  (score, size, frame edge,
+                                 eye distance, head roll)
                               │
+                              ▼
+                  Liveness window (24 frames): relative landmark
+                  motion + face-region pixel jitter
+                              │ live faces only
                               ▼
                   Align to 112x112 (ArcFace 5-pt similarity)
                               │
@@ -60,10 +77,12 @@ deleted-cascade so removing an employee also drops their face data.
 | `database.py`     | SQLite schema + CRUD |
 | `hailo_infer.py`  | HailoRT 5.x InferModel pipeline (SCRFD decode + NMS, ArcFace embed, alignment) |
 | `quality.py`      | Face quality gate + pose-change detection |
-| `main.py`         | Live loop: detect → quality gate → match → greet / voice-guided enrolment |
+| `liveness.py`     | Passive liveness check (relative landmark motion + pixel jitter) |
+| `wake_word.py`    | Vosk-based "hello echo" listener (background thread, mic) |
+| `main.py`         | Live loop + IDLE/ACTIVE state machine |
 | `enroll.py`       | Pre-enrol an employee from N camera frames (no live loop) |
 | `admin.py`        | List / show / delete / export DB entries |
-| `requirements.txt`| Python deps (HailoRT and picamera2 are NOT pip-installed) |
+| `requirements.txt`| Python deps (HailoRT, picamera2, and the Vosk model are NOT pip-installed) |
 
 ---
 
@@ -74,6 +93,7 @@ deleted-cascade so removing an employee also drops their face data.
 - Pi AI Camera (IMX500) on the CSI ribbon
 - Hailo-10H M.2 module seated in the Pi AI HAT+ / M.2 HAT, PCIe enabled
 - Speaker / 3.5 mm jack / HDMI audio out for TTS greetings
+- USB / I2S microphone for the wake-word listener
 - Official 27 W USB-C PSU recommended
 
 ---
@@ -237,6 +257,44 @@ hailortcli run2 -t 5 set-net models/scrfd_10g.hef
 # expect something like: scrfd_10g: fps: 240+
 ```
 
+### 2.8 Wake-word ("hello echo") setup
+
+The wake word uses [Vosk](https://alphacephei.com/vosk/) — small, offline,
+ARM-friendly. You need a microphone reachable as an ALSA input device, the
+Vosk Python package + `sounddevice` (already in `requirements.txt`), and a
+small acoustic model.
+
+System dependencies:
+
+```bash
+sudo apt install -y libportaudio2 portaudio19-dev
+arecord -l                                # confirm a capture device is listed
+arecord -d 3 -f cd /tmp/test.wav && aplay /tmp/test.wav   # mic loopback test
+```
+
+Download the English small model (~40 MB) into `models/`:
+
+```bash
+cd /home/echo/Documents/code/pi5/models
+wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip vosk-model-small-en-us-0.15.zip
+rm vosk-model-small-en-us-0.15.zip
+ls vosk-model-small-en-us-0.15/           # should contain conf/, am/, graph/, ...
+```
+
+The wake phrase is in `config.py` (`WAKE_WORD = "hello echo"`). If you'd
+rather pick a different short phrase, change it there and restart. Vosk
+runs the recogniser with a tight grammar that only knows the keyword and
+an "[unk]" sink, which keeps CPU usage minimal and reduces false matches.
+
+If your mic isn't auto-selected, list devices and force one:
+
+```bash
+python -c "import sounddevice as sd; print(sd.query_devices())"
+# pick the mic's index, then in your shell:
+export SD_DEVICE=<index>     # picked up automatically by sounddevice
+```
+
 ---
 
 ## 3. Using it
@@ -251,15 +309,34 @@ python main.py --auto-register
 
 What happens:
 
+- The system starts in **IDLE** state. Faces are still detected and drawn,
+  but no embeddings are computed and no greetings are spoken. A banner
+  across the top reads `Say 'hello echo' to start recognition`.
+- When the wake word is heard, the system transitions to **ACTIVE**, says
+  "Hello. I am ready.", and starts the full pipeline.
 - Faces are tracked in real time. Bounding boxes are drawn green for
   recognised people, with `name (cosine_score)`.
 - Detections that fail the **quality gate** (a hand near the face, a side
   profile, a face touching the edge of the frame, a tilted head, a face
   too far from the camera) are labelled `low quality: <reason>` and
-  ignored. They will NOT trigger registration.
-- An unknown but high-quality face must persist for
+  ignored. They will NOT trigger recognition or registration.
+- The largest face is also fed to the **liveness check** — it has to show
+  facial micro-motion AND face-region pixel jitter over a sliding window
+  before the system will recognise it. Failing faces show
+  `checking liveness... (static (photo?))`. This blocks held-up photos
+  and still images on a phone screen. (Video replay can still spoof —
+  see "Limitations" below.)
+- After `SLEEP_AFTER_NO_LIVE_FACE_SEC` (30 s) without any live face, the
+  system drops back to IDLE and waits for the wake word again.
+- An unknown but high-quality, **live** face must persist for
   `UNKNOWN_FRAMES_BEFORE_REGISTER` consecutive frames (~half a second)
   before registration is offered. The counter is shown on screen.
+
+Skip the wake word during development:
+
+```bash
+python main.py --auto-register --no-wake-word
+```
 - Registration is voice-guided through 5 poses. For each prompt the
   capture only happens when:
   1. enough time has elapsed for the user to actually move (`POSE_HOLD_SEC`),
@@ -342,6 +419,22 @@ Quality gate:
 | `QUALITY_MIN_EYE_DISTANCE`    | Reject too-small / occluded faces (28 px) |
 | `QUALITY_MAX_EYE_TILT`        | Reject extreme head roll (0.45) |
 
+Wake word + state machine:
+
+| Setting | Effect |
+|---------|--------|
+| `WAKE_WORD`                       | Phrase that activates recognition. Default `"hello echo"`. |
+| `SLEEP_AFTER_NO_LIVE_FACE_SEC`    | Drop back to IDLE after this much silence (30 s) |
+| `ACTIVE_SESSION_MAX_SEC`          | Hard cap on an ACTIVE session (10 min) |
+
+Liveness:
+
+| Setting | Effect |
+|---------|--------|
+| `LIVENESS_WINDOW_FRAMES`     | Sliding window length (24) |
+| `LIVENESS_REL_MOTION_MIN`    | Min facial micro-motion. Lower = more permissive. |
+| `LIVENESS_PIXEL_JITTER_MIN`  | Min face-region pixel jitter beyond camera read noise. |
+
 Voice-guided pose capture:
 
 | Setting | Effect |
@@ -401,10 +494,39 @@ service only do recognition + greeting.
 | Always says "unknown" | Threshold too tight, or too few enrolment samples. Lower `COSINE_MATCH_THRESHOLD` or re-enrol with more poses. |
 | Registration triggers when I bring my hand near my face | The quality gate should be filtering this; if not, raise `QUALITY_SCORE_THRESHOLD` or `QUALITY_MIN_EYE_DISTANCE`. |
 | Greeting doesn't speak | No audio sink. `aplay -l` to check, then `raspi-config` → System → Audio. |
+| `QFontDatabase: Cannot find font directory ... cv2/qt/fonts` | Harmless — opencv-python's bundled Qt has no fonts. `main.py` already sets `QT_LOGGING_RULES` to silence it. To fix properly: `sudo apt install -y fonts-dejavu-core && cp /usr/share/fonts/truetype/dejavu/*.ttf .venv/lib/python3.13/site-packages/cv2/qt/fonts/`. |
+| Wake word never triggers | `arecord -l` to confirm a mic exists; `python -c "import sounddevice as sd; print(sd.query_devices())"` to see what `sounddevice` sees. Set the mic as the default ALSA capture device or export `SD_DEVICE=<index>`. |
+| `[wake-word] disabled: ...` | Either `vosk` / `sounddevice` failed to import (re-run `pip install -r requirements.txt`) or the model dir is missing (re-run §2.8). The app falls back to ACTIVE mode automatically so you can still use it. |
+| Liveness flags real people as "static" | Lighting too flat or face too far. Lower `LIVENESS_PIXEL_JITTER_MIN` and/or `LIVENESS_REL_MOTION_MIN` in `config.py`. |
+| A photo *passes* liveness | Raise the same two thresholds, or shorten `LIVENESS_WINDOW_FRAMES` so the check is more reactive to held-still attacks. |
 
 ---
 
-## 6. Privacy
+## 6. Liveness limitations
+
+The passive liveness check defeats the two attacks most likely to be
+attempted at a kiosk:
+
+- **Printed photo, held still or waved** — fails because moving the whole
+  photo doesn't produce *relative* landmark motion (we subtract the
+  centroid first), and a still photo also doesn't produce face-region
+  pixel jitter beyond camera read noise.
+- **Phone screen with a still image** — fails for the same reasons.
+
+It does **not** defeat:
+
+- A high-quality video replay on a screen large enough to be detected as a
+  face. The video supplies real micro-motion.
+- A 3D mask. (Vanishingly rare in our threat model.)
+
+If you need to defend against video replay, plug in a dedicated
+anti-spoofing model (e.g. Silent-Face-Anti-Spoofing) — there's a slot for
+it in `liveness.py`. Or add an active challenge ("please blink twice")
+before granting recognition.
+
+---
+
+## 7. Privacy
 
 Face embeddings are biometric data. `faces.db` is gitignored. Store it on
 an encrypted volume if this leaves a controlled environment, and only

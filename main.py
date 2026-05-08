@@ -1,11 +1,17 @@
-"""Live face recognition + voice-guided auto-registration.
+"""Live face recognition with wake-word activation, passive liveness,
+voice-guided enrolment, and re-registration verification.
 
 Press keys in the OpenCV window:
   q  quit
-  r  force registration of the largest visible face
+  r  force registration of the largest visible face (only in ACTIVE state)
 """
 
 from __future__ import annotations
+
+# Suppress the harmless Qt font warning from opencv-python's bundled Qt
+# before cv2 is imported. (See README troubleshooting.)
+import os
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
 
 import argparse
 import time
@@ -18,12 +24,14 @@ from picamera2 import Picamera2
 import config
 from database import FaceDB
 from hailo_infer import HailoFacePipeline, align_face
+from liveness import LivenessChecker
 from quality import (
     is_quality_face,
     landmark_anchor,
     landmarks_drift,
     shift_matches_direction,
 )
+from wake_word import WakeWordError, WakeWordListener
 
 
 # ---------- helpers ---------------------------------------------------------
@@ -95,17 +103,19 @@ def open_camera() -> Picamera2:
 
 
 def grab_frame(cam: Picamera2) -> np.ndarray:
-    """picamera2 'RGB888' delivers BGR-ordered bytes on libcamera; the array
-    already matches what cv2 / our model wrappers expect."""
     return cam.capture_array()
 
 
 # ---------- HUD ------------------------------------------------------------
 
 
-def draw_hud(frame, dets, label_for, prompt: str | None = None,
-             progress: tuple[int, int] | None = None,
-             status: str | None = None):
+def draw_hud(frame, dets, label_for, *, banner=None, prompt=None,
+             progress=None, status=None):
+    if banner:
+        # Big banner across the top
+        cv2.rectangle(frame, (0, 0), (frame.shape[1], 50), (0, 0, 0), -1)
+        cv2.putText(frame, banner, (10, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
     for d in dets:
         x1, y1, x2, y2 = (int(v) for v in d.bbox)
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -113,12 +123,14 @@ def draw_hud(frame, dets, label_for, prompt: str | None = None,
         if label:
             cv2.putText(frame, label, (x1, max(0, y1 - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    y = 80 if banner else 30
     if prompt:
         head = f"[{progress[0]}/{progress[1]}] {prompt}" if progress else prompt
-        cv2.putText(frame, head, (10, 30),
+        cv2.putText(frame, head, (10, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+        y += 30
     if status:
-        cv2.putText(frame, status, (10, 60),
+        cv2.putText(frame, status, (10, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
 
@@ -131,18 +143,13 @@ def capture_with_prompts(
     greeter: Greeter,
     show_preview: bool,
 ) -> list[np.ndarray]:
-    """Walks through config.POSE_PROMPTS. Each pose only captures once we see:
-        1. the user has actually shifted their face in the asked direction, AND
-        2. the face has been a high-quality, stable detection for POSE_STABLE_SEC.
-    """
     embeddings: list[np.ndarray] = []
     prompts = config.POSE_PROMPTS
-    baseline_anchor = None    # set after the first ("look straight") capture
+    baseline_anchor = None
     baseline_eye_dist = 1.0
 
     for i, (prompt, direction) in enumerate(prompts, start=1):
         greeter.say(prompt)
-
         hold_until = time.time() + config.POSE_HOLD_SEC
         deadline = time.time() + config.POSE_HOLD_SEC + config.POSE_CAPTURE_TIMEOUT_SEC
         stable_since = None
@@ -155,7 +162,6 @@ def capture_with_prompts(
             dets = pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
                                config.DETECTOR_NMS_IOU)
             det = largest_detection(dets)
-
             ok = False
             reason = "no face"
             if det is not None:
@@ -197,13 +203,14 @@ def capture_with_prompts(
                 last_lms = None
 
             if show_preview:
-                draw_hud(frame, dets, lambda d: "", prompt, (len(embeddings), len(prompts)), status)
+                draw_hud(frame, dets, lambda d: "", prompt=prompt,
+                         progress=(len(embeddings), len(prompts)),
+                         status=status)
                 cv2.imshow("Face Recognition", frame)
                 cv2.waitKey(20)
 
         if not captured:
             greeter.say("Skipping this pose. Let's continue.")
-
     return embeddings
 
 
@@ -267,8 +274,12 @@ def prompt_registration(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-display", action="store_true")
-    parser.add_argument("--auto-register", action="store_true",
-                        help="Prompt to register every unknown face automatically.")
+    parser.add_argument("--auto-register", action="store_true")
+    parser.add_argument(
+        "--no-wake-word",
+        action="store_true",
+        help="Skip Vosk and start in ACTIVE state immediately.",
+    )
     args = parser.parse_args()
     show_preview = not args.no_display
 
@@ -276,64 +287,143 @@ def main():
     db = FaceDB()
     greeter = Greeter()
     cam = open_camera()
+    liveness = LivenessChecker()
+
+    listener: WakeWordListener | None = None
+    state = "ACTIVE" if args.no_wake_word else "IDLE"
+    if not args.no_wake_word:
+        try:
+            listener = WakeWordListener(
+                config.VOSK_MODEL_DIR,
+                config.WAKE_WORD,
+                samplerate=config.WAKE_WORD_SAMPLERATE,
+                blocksize=config.WAKE_WORD_BLOCKSIZE,
+            )
+            listener.start()
+            print(f"[wake-word] listening for: '{config.WAKE_WORD}'")
+        except WakeWordError as exc:
+            print(f"[wake-word] disabled: {exc}")
+            print("[wake-word] starting in ACTIVE state. Use --no-wake-word to silence this.")
+            state = "ACTIVE"
 
     emp_ids, names, matrix = db.load_all()
     print(f"Loaded {matrix.shape[0]} embeddings for {len(set(emp_ids))} employees.")
+    print(f"Initial state: {state}")
 
-    unknown_streak = 0  # consecutive frames where the largest face is good but unknown
+    unknown_streak = 0
+    last_live_face_at = 0.0
+    activated_at = 0.0
+    banner_idle = f"Say '{config.WAKE_WORD}' to start recognition"
 
     try:
         while True:
             frame = grab_frame(cam)
+
+            # ---- wake-word transition (IDLE -> ACTIVE) -----------------
+            if state == "IDLE" and listener is not None and listener.is_activated():
+                state = "ACTIVE"
+                activated_at = time.time()
+                last_live_face_at = activated_at
+                listener.deactivate()
+                greeter.reset_last()
+                liveness.reset()
+                greeter.say("Hello. I am ready.")
+                print("[state] IDLE -> ACTIVE")
+
             dets = pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
                                config.DETECTOR_NMS_IOU)
-
-            labels: dict[int, str] = {}
             biggest = largest_detection(dets)
+            labels: dict[int, str] = {}
+
             biggest_quality_unknown = False
+            biggest_is_live = False
 
-            for i, det in enumerate(dets):
-                ok, reason = is_quality_face(det, frame.shape)
-                if not ok:
-                    labels[i] = f"low quality: {reason}"
-                    continue
-                aligned = align_face(frame, det.landmarks)
-                emb = pipe.embed(aligned)
-                idx, score = cosine_match(emb, matrix)
-                if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
-                    labels[i] = f"{names[idx]} ({score:.2f})"
-                    if det is biggest:
-                        greeter.greet(emp_ids[idx], names[idx])
+            if state == "ACTIVE":
+                # Liveness updates only on the largest face's track.
+                biggest_is_live = liveness.update(frame, biggest)
+
+                for i, det in enumerate(dets):
+                    ok, reason = is_quality_face(det, frame.shape)
+                    if not ok:
+                        labels[i] = f"low quality: {reason}"
+                        continue
+                    if det is biggest and not biggest_is_live:
+                        labels[i] = f"checking liveness... ({liveness.last_reason})"
+                        continue
+
+                    aligned = align_face(frame, det.landmarks)
+                    emb = pipe.embed(aligned)
+                    idx, score = cosine_match(emb, matrix)
+                    if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
+                        labels[i] = f"{names[idx]} ({score:.2f})"
+                        if det is biggest:
+                            greeter.greet(emp_ids[idx], names[idx])
+                    else:
+                        labels[i] = f"unknown ({score:.2f})"
+                        if det is biggest:
+                            biggest_quality_unknown = True
+
+                if biggest_is_live:
+                    last_live_face_at = time.time()
+
+                if biggest_quality_unknown:
+                    unknown_streak += 1
                 else:
-                    labels[i] = f"unknown ({score:.2f})"
-                    if det is biggest:
-                        biggest_quality_unknown = True
+                    unknown_streak = 0
 
-            if biggest_quality_unknown:
-                unknown_streak += 1
-            else:
-                unknown_streak = 0
+                if (
+                    args.auto_register
+                    and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
+                ):
+                    unknown_streak = 0
+                    if prompt_registration(db, greeter, cam, pipe, show_preview):
+                        emp_ids, names, matrix = db.load_all()
 
-            if (
-                args.auto_register
-                and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
-            ):
-                unknown_streak = 0
-                if prompt_registration(db, greeter, cam, pipe, show_preview):
-                    emp_ids, names, matrix = db.load_all()
+                # ---- ACTIVE -> IDLE timeouts ---------------------------
+                idle_for = time.time() - last_live_face_at if last_live_face_at else 0
+                if (
+                    idle_for >= config.SLEEP_AFTER_NO_LIVE_FACE_SEC
+                    or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)
+                ):
+                    if listener is not None:
+                        state = "IDLE"
+                        liveness.reset()
+                        greeter.reset_last()
+                        listener.deactivate()
+                        print("[state] ACTIVE -> IDLE")
 
+            # ---- HUD ---------------------------------------------------
             if show_preview:
-                status = (f"unknown streak {unknown_streak}/{config.UNKNOWN_FRAMES_BEFORE_REGISTER}"
-                          if biggest_quality_unknown else None)
-                draw_hud(frame, dets, lambda d: labels.get(dets.index(d), ""), status=status)
+                if state == "IDLE":
+                    # Just show detections, but don't recognise.
+                    for i, _ in enumerate(dets):
+                        labels[i] = "(idle)"
+                    banner = banner_idle
+                    status = None
+                else:
+                    banner = None
+                    if biggest is not None and not biggest_is_live:
+                        status = (f"liveness: {liveness.last_reason}  "
+                                  f"motion={liveness.last_relative_motion:.2f}  "
+                                  f"jitter={liveness.last_pixel_jitter:.1f}")
+                    elif biggest_quality_unknown:
+                        status = (f"unknown streak {unknown_streak}/"
+                                  f"{config.UNKNOWN_FRAMES_BEFORE_REGISTER}")
+                    else:
+                        status = None
+
+                draw_hud(frame, dets, lambda d: labels.get(dets.index(d), ""),
+                         banner=banner, status=status)
                 cv2.imshow("Face Recognition", frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
-                if key == ord("r"):
+                if key == ord("r") and state == "ACTIVE":
                     if prompt_registration(db, greeter, cam, pipe, show_preview):
                         emp_ids, names, matrix = db.load_all()
     finally:
+        if listener is not None:
+            listener.stop()
         cam.stop()
         pipe.close()
         db.close()

@@ -1,5 +1,8 @@
 numpy>=1.24
 opencv-python>=4.8
 pyttsx3>=2.90
+vosk>=0.3.45
+sounddevice>=0.4.6
 # picamera2     -> install via apt: python3-picamera2 (see README §2.3)
 # hailo_platform -> install from the HailoRT cp313 wheel (see README §2.5)
+# vosk model    -> download into models/ (see README §2.8)
