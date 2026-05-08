@@ -1,14 +1,14 @@
 """Wake-word debugger.
 
-Prints everything Vosk transcribes (no grammar restriction), so you can
-see whether the model is even hearing you and how it transcribes "hello
-echo". If it consistently transcribes the phrase as something else (e.g.
-"hello eco", "low echo"), put that exact transcription into config.WAKE_WORD.
+Captures at the mic's native rate, resamples to Vosk's expected rate, and
+prints everything Vosk transcribes. If --grammar is set, the decoder is
+constrained to the configured WAKE_WORD plus an [unk] sink (same as the
+production listener).
 
 Usage:
     python debug_wake.py
     python debug_wake.py --device 5
-    python debug_wake.py --grammar     # use the same tight grammar as the app
+    python debug_wake.py --grammar
 """
 
 from __future__ import annotations
@@ -18,36 +18,39 @@ import json
 import queue
 import sys
 
+import numpy as np
 import sounddevice as sd
 import vosk
 
 import config
+from audio_utils import pick_input_device, resample_int16
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--device", type=int, default=None)
-    p.add_argument("--samplerate", type=int, default=config.WAKE_WORD_SAMPLERATE)
-    p.add_argument("--grammar", action="store_true",
-                   help="Constrain decoder to the keyword + [unk] sink "
-                        "(same as the app).")
+    p.add_argument("--grammar", action="store_true")
     args = p.parse_args()
 
     if not config.VOSK_MODEL_DIR.is_dir():
         print(f"Vosk model dir not found: {config.VOSK_MODEL_DIR}", file=sys.stderr)
-        print("Download it -- see README §2.8.", file=sys.stderr)
         sys.exit(1)
+
+    device, native_rate = pick_input_device(args.device)
+    target_rate = config.WAKE_WORD_SAMPLERATE
+    print(f"Mic device: {device if device is not None else '(default)'}  "
+          f"native={native_rate} Hz  vosk={target_rate} Hz")
 
     print(f"Loading {config.VOSK_MODEL_DIR}...")
     model = vosk.Model(str(config.VOSK_MODEL_DIR))
     if args.grammar:
         rec = vosk.KaldiRecognizer(
-            model, args.samplerate,
+            model, target_rate,
             json.dumps([config.WAKE_WORD, "[unk]"]),
         )
         print(f"Grammar mode -- only listening for '{config.WAKE_WORD}'.")
     else:
-        rec = vosk.KaldiRecognizer(model, args.samplerate)
+        rec = vosk.KaldiRecognizer(model, target_rate)
         print("Open mode -- transcribing everything heard.")
 
     q: queue.Queue[bytes] = queue.Queue()
@@ -55,13 +58,19 @@ def main():
     def cb(indata, frames, time_info, status):  # noqa: ARG001
         if status:
             print(status, file=sys.stderr)
-        q.put(bytes(indata))
+        if native_rate != target_rate:
+            mono = np.frombuffer(bytes(indata), dtype=np.int16)
+            mono = resample_int16(mono, native_rate, target_rate)
+            q.put(mono.tobytes())
+        else:
+            q.put(bytes(indata))
 
-    print(f"Speak now. Ctrl-C to stop.\nDevice: {args.device or 'default'}\n")
+    block = max(1, int(native_rate / 2))  # 500 ms
+    print("Speak now. Ctrl-C to stop.\n")
     with sd.RawInputStream(
-        samplerate=args.samplerate,
-        blocksize=8000,
-        device=args.device,
+        samplerate=native_rate,
+        blocksize=block,
+        device=device,
         dtype="int16",
         channels=1,
         callback=cb,
