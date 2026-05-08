@@ -369,16 +369,29 @@ rm piper_linux_aarch64.tar.gz
 cd ..
 ```
 
-**Voice model** — Amy is a clear US-English female. Pick another from
-https://github.com/rhasspy/piper/blob/master/VOICES.md if you prefer a
-different voice/accent.
+**Voice models** — use the bundled installer to grab a curated set of
+clear English voices (~500 MB, 7 voices), or `--all` for every English
+voice in the script (~2 GB). To download just one voice manually, use
+the wget commands inside `install_piper_voices.sh` as a template.
 
 ```bash
-cd models/piper
-wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx
-wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json
-cd ../..
+./install_piper_voices.sh             # 7 curated voices (recommended)
+./install_piper_voices.sh --all       # every English voice listed
+./install_piper_voices.sh --list      # show what each option installs
 ```
+
+After download, switch voices by editing `PIPER_MODEL_PATH` in
+`config.py` to point at any `.onnx` under `models/piper/`. Default is
+Amy (US English, female). Other clear options:
+
+| Voice                              | Style |
+|------------------------------------|-------|
+| `en_US-amy-medium`                 | US female, clear  ← default |
+| `en_US-lessac-medium`              | US male, news-anchor |
+| `en_US-ryan-medium`                | US male, conversational |
+| `en_US-libritts-high`              | Highest quality, slower |
+| `en_GB-alan-medium`                | British male |
+| `en_GB-jenny_dioco-medium`         | British female |
 
 **Smoke test** through the Anker (if you've pinned `AUDIO_OUTPUT_DEVICE`):
 
