@@ -31,6 +31,7 @@ from quality import (
     landmarks_drift,
     shift_matches_direction,
 )
+from blink import BlinkChecker
 from tts import make_backend
 from wake_word import WakeWordError, WakeWordListener
 
@@ -105,24 +106,22 @@ def largest_detection(dets):
 
 
 class Greeter:
-    """Speaks once per person change. Same emp_id back-to-back stays silent.
-
-    Uses the TTS backend selected by tts.make_backend() -- Piper if
-    installed, else pyttsx3. Audio is routed via config.AUDIO_OUTPUT_DEVICE
-    when set so greetings play on the chosen sink (e.g. the Anker).
-    """
+    """Speaks each recognised face once per cooldown, regardless of how
+    many people are in frame. Keeps a per-emp_id timestamp so the same
+    person isn't re-greeted while they linger."""
 
     def __init__(self):
         self.backend = make_backend()
-        self._last_greeted: str | None = None
+        self._last_greeted: dict[str, float] = {}
         if config.AUDIO_OUTPUT_DEVICE:
             print(f"[TTS] routing audio to ALSA device: {config.AUDIO_OUTPUT_DEVICE}")
 
     def greet(self, emp_id: str, name: str) -> bool:
-        """Returns True iff we actually spoke (i.e. emp_id changed)."""
-        if emp_id == self._last_greeted:
+        """Returns True iff we actually spoke."""
+        now = time.time()
+        if now - self._last_greeted.get(emp_id, 0.0) < config.GREET_COOLDOWN_SEC:
             return False
-        self._last_greeted = emp_id
+        self._last_greeted[emp_id] = now
         msg = f"Hello {name}, welcome!"
         print(f"[GREET] {msg}")
         self.backend.speak(msg)
@@ -133,7 +132,7 @@ class Greeter:
         self.backend.speak(text)
 
     def reset_last(self):
-        self._last_greeted = None
+        self._last_greeted.clear()
 
 
 # ---------- camera ---------------------------------------------------------
@@ -337,6 +336,7 @@ def main():
     cam = open_camera()
     liveness = LivenessChecker()
     learner = SilentLearner(db)
+    blinker = BlinkChecker(pipe, grab_frame, draw_hud)
 
     listener: WakeWordListener | None = None
     state = "ACTIVE" if args.no_wake_word else "IDLE"
@@ -365,6 +365,8 @@ def main():
     # frame does NOT count as new -- we still time out and go IDLE.
     last_interaction_at = 0.0
     activated_at = 0.0
+    # Per-session blink confirmation. Cleared on each ACTIVE entry.
+    blink_confirmed: set[str] = set()
     banner_idle = f"Say '{config.WAKE_WORD}' to start recognition"
 
     try:
@@ -379,6 +381,7 @@ def main():
                 listener.deactivate()
                 greeter.reset_last()
                 liveness.reset()
+                blink_confirmed.clear()
                 greeter.say("Hello. I am ready.")
                 print("[state] IDLE -> ACTIVE")
 
@@ -391,36 +394,68 @@ def main():
             biggest_is_live = False
 
             if state == "ACTIVE":
-                # Liveness updates only on the largest face's track.
+                # Temporal liveness only tracked on the largest face.
                 biggest_is_live = liveness.update(frame, biggest)
+
+                # Faces we want to greet this frame; collected first, then
+                # the blink challenge runs once on the largest of them.
+                pending_greets: list[tuple[int, str, str, np.ndarray, float]] = []
 
                 for i, det in enumerate(dets):
                     ok, reason = is_quality_face(det, frame.shape)
                     if not ok:
                         labels[i] = f"low quality: {reason}"
                         continue
-                    if det is biggest and not biggest_is_live:
-                        labels[i] = f"checking liveness... ({liveness.last_reason})"
-                        continue
+                    if det is biggest:
+                        if not biggest_is_live:
+                            labels[i] = f"checking liveness... ({liveness.last_reason})"
+                            continue
+                    else:
+                        # Secondary faces only get the cheap screen-attack
+                        # gates (specular + texture). No temporal window.
+                        sf_ok, sf_reason = LivenessChecker.single_frame_check(frame, det)
+                        if not sf_ok:
+                            labels[i] = f"liveness: {sf_reason}"
+                            continue
 
                     aligned = align_face(frame, det.landmarks)
                     emb = pipe.embed(aligned)
                     idx, score = cosine_match(emb, matrix)
                     if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
                         labels[i] = f"{names[idx]} ({score:.2f})"
-                        if det is biggest:
-                            # greet() returns True only on a *new* person.
-                            if greeter.greet(emp_ids[idx], names[idx]):
-                                last_interaction_at = time.time()
-                            # Silently grow the gallery on confident matches.
-                            if learner.maybe_add(
-                                emp_ids[idx], names[idx], emb, score
-                            ):
-                                emp_ids, names, matrix = db.load_all()
+                        # Silent learning on confident, live, recognised faces.
+                        if learner.maybe_add(emp_ids[idx], names[idx], emb, score):
+                            emp_ids, names, matrix = db.load_all()
+                        pending_greets.append(
+                            (i, emp_ids[idx], names[idx], emb, score)
+                        )
                     else:
                         labels[i] = f"unknown ({score:.2f})"
                         if det is biggest:
                             biggest_quality_unknown = True
+
+                # ---- blink challenge gate -------------------------------
+                # If any pending greet's emp_id hasn't been blink-confirmed
+                # this session, run the challenge once. While the challenge
+                # is running, the loop yields control to it.
+                need_blink = [
+                    g for g in pending_greets if g[1] not in blink_confirmed
+                ]
+                if config.LIVENESS_REQUIRE_BLINK and need_blink:
+                    if blinker.run(cam, greeter, show_preview):
+                        for _, eid, _, _, _ in need_blink:
+                            blink_confirmed.add(eid)
+                        last_interaction_at = time.time()
+                    else:
+                        greeter.say("Blink not detected. Please try again.")
+                        # Don't greet the unconfirmed ones this round.
+                        pending_greets = [
+                            g for g in pending_greets if g[1] in blink_confirmed
+                        ]
+
+                for _, emp_id, name, _, _ in pending_greets:
+                    if greeter.greet(emp_id, name):
+                        last_interaction_at = time.time()
 
                 if biggest_quality_unknown:
                     # Someone unfamiliar is in frame -- keep awake while we

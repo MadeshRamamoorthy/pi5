@@ -23,7 +23,10 @@ EMBEDDING_DIM = 512
 
 # Recognition
 COSINE_MATCH_THRESHOLD = 0.38  # ArcFace: 0.35-0.45 typical; lower => looser match
-GREET_COOLDOWN_SEC = 10        # not used today; kept for reference
+# Each emp_id is greeted at most once per this many seconds. Lets the
+# system greet every recognised face in a multi-person scene without
+# spamming when someone keeps stepping in and out of frame.
+GREET_COOLDOWN_SEC = 60
 
 # Camera
 CAMERA_RESOLUTION = (1280, 720)
@@ -64,6 +67,18 @@ POSE_CAPTURE_TIMEOUT_SEC = 8.0 # give up on this pose if user doesn't comply
 # same person before we append samples to an existing emp_id.
 REREGISTER_MATCH_THRESHOLD = 0.35
 
+# ---- Active liveness (blink challenge) ------------------------------------
+# When True, every emp_id must blink once per ACTIVE session before they
+# get greeted. Clears on IDLE so the next session re-prompts. Defeats the
+# remaining attack vector: a high-quality video replay on a screen.
+LIVENESS_REQUIRE_BLINK = True
+LIVENESS_BLINK_PROMPT = "Please blink once to confirm."
+LIVENESS_BLINK_TIMEOUT_SEC = 5
+LIVENESS_BLINK_PATCH_PX = 14         # half-extent (px) around each eye landmark
+LIVENESS_BLINK_DELTA_MIN = 6.0       # min std-dev range across the window
+LIVENESS_BLINK_REVERIFY_SEC = 600    # within an ACTIVE session, this is huge
+                                     # (1h); blinks are session-scoped anyway
+
 # ---- TTS backend ----------------------------------------------------------
 # "piper"   -> neural Piper via the piper1-gpl Python package
 #              (pip install piper-tts). Falls back to pyttsx3 automatically
@@ -74,6 +89,12 @@ TTS_BACKEND = "piper"
 # Default voice. Drop more .onnx + .onnx.json pairs into models/piper/
 # and point this at any of them to switch voices. See README §2.9.
 PIPER_MODEL_PATH = MODELS_DIR / "piper" / "en_US-hfc_female-medium.onnx"
+
+# Pad the start of each TTS utterance with this much silence. USB speakers
+# (Anker A3301 etc.) often clip the first ~300 ms while their amp wakes up.
+# 0 disables. The silence is inserted *into the WAV*, not added as a
+# blocking sleep, so total latency is the same either way.
+TTS_PREBUFFER_MS = 500
 
 # ---- Audio output for TTS -------------------------------------------------
 # None  -> use system default audio sink (HDMI / 3.5 mm / whatever PipeWire

@@ -78,10 +78,13 @@ deleted-cascade so removing an employee also drops their face data.
 | `hailo_infer.py`  | HailoRT 5.x InferModel pipeline (SCRFD decode + NMS, ArcFace embed, alignment) |
 | `quality.py`      | Face quality gate + pose-change detection |
 | `liveness.py`     | Passive liveness check (relative landmark motion + pixel jitter) |
+| `blink.py`        | Active liveness: blink challenge gating per-session |
+| `tts.py`          | TTS backend abstraction (Piper / pyttsx3) with WAV prebuffer |
 | `wake_word.py`    | Vosk-based "hello echo" listener (background thread, mic) |
-| `main.py`         | Live loop + IDLE/ACTIVE state machine |
+| `main.py`         | Live loop + IDLE/ACTIVE state machine, multi-face greet |
 | `enroll.py`       | Pre-enrol an employee from N camera frames (no live loop) |
-| `admin.py`        | List / show / delete / export DB entries |
+| `admin.py`        | CLI: list / show / delete / export DB entries |
+| `admin_web.py`    | Flask web UI for the same operations (`./start_admin.sh`) |
 | `requirements.txt`| Python deps (HailoRT, picamera2, and the Vosk model are NOT pip-installed) |
 
 ---
@@ -470,12 +473,22 @@ What happens:
   profile, a face touching the edge of the frame, a tilted head, a face
   too far from the camera) are labelled `low quality: <reason>` and
   ignored. They will NOT trigger recognition or registration.
-- The largest face is also fed to the **liveness check** — it has to show
-  facial micro-motion AND face-region pixel jitter over a sliding window
-  before the system will recognise it. Failing faces show
-  `checking liveness... (static (photo?))`. This blocks held-up photos
-  and still images on a phone screen. (Video replay can still spoof —
-  see "Limitations" below.)
+- The largest face is also fed to the **temporal liveness check** — it
+  has to show facial micro-motion AND face-region pixel jitter over a
+  sliding window before the system will recognise it. Other faces in
+  the scene get the cheap **single-frame screen-attack gates** (specular
+  highlights + texture variance). Failing faces show
+  `checking liveness... (static (photo?))` or `liveness: glare/screen`.
+- Once a recognised face passes both gates, the system runs a one-shot
+  **active blink challenge** for that emp_id (configurable via
+  `LIVENESS_REQUIRE_BLINK`). Speak prompt: "Please blink once to
+  confirm." A clear range of eye-region pixel std across a 5-second
+  window passes the challenge. Confirmation is held for the rest of the
+  ACTIVE session and cleared on IDLE. This defeats the remaining attack
+  vector — a high-quality video replay.
+- **All recognised faces are greeted**, not just the largest one. Each
+  emp_id is rate-limited to one greeting per `GREET_COOLDOWN_SEC` so
+  someone walking back and forth doesn't trigger repeats.
 - After `IDLE_AFTER_LAST_INTERACTION_SEC` (10 s) **with no new event**
   the system drops back to IDLE. "New event" means a different person
   greeted, or an unknown face standing in front of the camera. A
@@ -527,6 +540,8 @@ python enroll.py --emp-id E001 --name "Alice Kumar" --frames 5
 The DB lives at `/home/echo/Documents/code/pi5/faces.db` (SQLite).
 `emp_id` is the primary key.
 
+#### CLI
+
 ```bash
 python admin.py list                       # all employees + sample counts
 python admin.py show E001                  # one employee + per-embedding info
@@ -536,7 +551,27 @@ python admin.py export employees.csv       # CSV (no embedding bytes)
 python admin.py path                       # absolute path to faces.db
 ```
 
-You can also inspect with any SQLite client:
+#### Web UI
+
+A minimal Flask app on port 8080 (configurable). Lets you list, rename,
+and delete employees from a browser. SQLite handles concurrent access,
+so it can run alongside `./start.sh` on the same Pi.
+
+```bash
+./start_admin.sh                           # http://0.0.0.0:8080
+ADMIN_HOST=127.0.0.1 ADMIN_PORT=9000 ./start_admin.sh
+```
+
+JSON API for scripting:
+
+```
+GET  /api/employees                  -> list
+GET  /api/employees/<emp_id>         -> details
+POST /api/employees/<emp_id>/rename  -> body: {"name": "..."}
+POST /api/employees/<emp_id>/delete  -> remove + cascade embeddings
+```
+
+#### Direct SQLite
 
 ```bash
 sudo apt install -y sqlite3 sqlitebrowser
@@ -597,7 +632,7 @@ Silent learning:
 | `SILENT_LEARN_MIN_INTERVAL_SEC`       | At most one new sample per person per this many seconds (60) |
 | `SILENT_LEARN_MAX_SAMPLES_PER_PERSON` | Cap; oldest drop first when over (30) |
 
-Liveness:
+Liveness (passive):
 
 | Setting | Effect |
 |---------|--------|
@@ -606,6 +641,25 @@ Liveness:
 | `LIVENESS_MIN_TEXTURE_VAR`      | Reject if face crop is too smooth (Laplacian variance below this). Defeats flat phone/monitor displays. (60) |
 | `LIVENESS_REL_MOTION_MIN`       | Min facial micro-motion in window. Lower = more permissive. |
 | `LIVENESS_PIXEL_JITTER_MIN`     | Min face-region pixel jitter beyond camera read noise. |
+
+Liveness (active blink):
+
+| Setting | Effect |
+|---------|--------|
+| `LIVENESS_REQUIRE_BLINK`     | Master switch (True). Set False to skip the active challenge. |
+| `LIVENESS_BLINK_PROMPT`      | Spoken prompt ("Please blink once to confirm.") |
+| `LIVENESS_BLINK_TIMEOUT_SEC` | Max wait for a blink (5 s) |
+| `LIVENESS_BLINK_PATCH_PX`    | Half-extent of eye-region patch sampled from each eye landmark (14) |
+| `LIVENESS_BLINK_DELTA_MIN`   | Min std-dev range across the window for "blink seen" (6.0). Raise if too lax, lower if real blinks miss. |
+
+TTS:
+
+| Setting | Effect |
+|---------|--------|
+| `TTS_BACKEND`        | `"piper"` (preferred) or `"pyttsx3"` |
+| `PIPER_MODEL_PATH`   | Path to the `.onnx` voice model |
+| `TTS_PREBUFFER_MS`   | Silence padded at the start of each utterance so USB speakerphones don't clip the first word (500). Set to 0 to disable. |
+| `AUDIO_OUTPUT_DEVICE` | ALSA name for the speaker (`"plughw:CARD=PowerConf,DEV=0"`). `None` = system default. |
 
 The HUD prints every signal alongside its threshold while liveness is
 failing, e.g. `motion=0.32/0.45  jitter=3.2/4.0  glare=18%/10%
@@ -685,25 +739,34 @@ service only do recognition + greeting.
 
 ## 6. Liveness limitations
 
-The passive liveness check defeats the two attacks most likely to be
-attempted at a kiosk:
+The full liveness stack now combines:
 
-- **Printed photo, held still or waved** — fails because moving the whole
-  photo doesn't produce *relative* landmark motion (we subtract the
-  centroid first), and a still photo also doesn't produce face-region
-  pixel jitter beyond camera read noise.
-- **Phone screen with a still image** — fails for the same reasons.
+1. **Single-frame screen-attack gates** — specular highlight ratio +
+   texture variance (Laplacian). Defeats printed photos and held-up
+   phone/monitor screens with glare.
+2. **Temporal micro-motion** — over a sliding window the largest face
+   must show non-rigid landmark jitter and face-region pixel changes
+   beyond camera noise.
+3. **Active blink challenge** — when `LIVENESS_REQUIRE_BLINK` is on,
+   each emp_id is asked to blink before its first greeting in an ACTIVE
+   session.
+
+This combination defeats:
+
+- printed photos (still or waved),
+- phone-screen still images (with or without glare),
+- and even high-quality video replays where the played-back person
+  doesn't blink in time, since the active challenge requires a blink
+  on demand.
 
 It does **not** defeat:
 
-- A high-quality video replay on a screen large enough to be detected as a
-  face. The video supplies real micro-motion.
-- A 3D mask. (Vanishingly rare in our threat model.)
+- A video replay where the played subject blinks within the timeout
+  window (rare and requires the attacker to anticipate the prompt).
+- A high-quality 3D mask.
 
-If you need to defend against video replay, plug in a dedicated
-anti-spoofing model (e.g. Silent-Face-Anti-Spoofing) — there's a slot for
-it in `liveness.py`. Or add an active challenge ("please blink twice")
-before granting recognition.
+For higher security, plug in a dedicated anti-spoofing model
+(Silent-Face-Anti-Spoofing or similar) on the Hailo as a fourth signal.
 
 ---
 

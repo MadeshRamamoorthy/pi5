@@ -67,6 +67,33 @@ class LivenessChecker:
         self.last_texture_var = 0.0
         self.last_reason = "warming up"
 
+    @staticmethod
+    def single_frame_check(frame: np.ndarray, det) -> tuple[bool, str]:
+        """Run only the cheap screen-attack defences (specular highlights
+        + texture variance). Used for non-largest faces in multi-face
+        scenes where we don't maintain a per-face temporal window."""
+        if det is None:
+            return False, "no face"
+        x1, y1, x2, y2 = (int(round(v)) for v in det.bbox)
+        x1, y1 = max(x1, 0), max(y1, 0)
+        x2 = min(x2, frame.shape[1])
+        y2 = min(y2, frame.shape[0])
+        if x2 - x1 < 8 or y2 - y1 < 8:
+            return False, "face too small"
+        color = cv2.resize(
+            frame[y1:y2, x1:x2],
+            (config.LIVENESS_CROP_PX, config.LIVENESS_CROP_PX),
+        )
+        gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
+        specular_ratio = float((hsv[:, :, 2] > 240).mean())
+        if specular_ratio > config.LIVENESS_MAX_SPECULAR_RATIO:
+            return False, f"glare/screen ({specular_ratio:.0%})"
+        texture_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        if texture_var < config.LIVENESS_MIN_TEXTURE_VAR:
+            return False, f"too smooth (tex={texture_var:.0f})"
+        return True, ""
+
     def update(self, frame: np.ndarray, det) -> bool:
         if det is None:
             self.reset()

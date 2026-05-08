@@ -25,6 +25,26 @@ import pyttsx3
 import config
 
 
+def _prepend_silence(wav_path: str, ms: int) -> None:
+    """Prepend `ms` of silence to an existing WAV (in place).
+
+    USB speakerphones often clip the first ~300 ms of audio while their
+    DAC/amp wakes up. Buffering the WAV with silence at the start gives
+    the device time to come up before the first phoneme is spoken,
+    instead of using a blocking sleep before aplay.
+    """
+    if ms <= 0:
+        return
+    with wave.open(wav_path, "rb") as f:
+        params = f.getparams()
+        audio = f.readframes(f.getnframes())
+    nsil = int(params.framerate * ms / 1000)
+    silence = b"\x00" * (nsil * params.sampwidth * params.nchannels)
+    with wave.open(wav_path, "wb") as f:
+        f.setparams(params)
+        f.writeframes(silence + audio)
+
+
 class _Backend:
     name = "?"
 
@@ -44,7 +64,8 @@ class PyttsxBackend(_Backend):
         self.device = output_device
 
     def speak(self, text: str) -> None:
-        if not self.device:
+        if not self.device and config.TTS_PREBUFFER_MS <= 0:
+            # Cheapest path: let pyttsx3 drive the system default sink.
             self.engine.say(text)
             self.engine.runAndWait()
             return
@@ -53,9 +74,12 @@ class PyttsxBackend(_Backend):
         try:
             self.engine.save_to_file(text, path)
             self.engine.runAndWait()
-            subprocess.run(
-                ["aplay", "-q", "-D", self.device, path], check=False
-            )
+            _prepend_silence(path, config.TTS_PREBUFFER_MS)
+            cmd = ["aplay", "-q"]
+            if self.device:
+                cmd += ["-D", self.device]
+            cmd.append(path)
+            subprocess.run(cmd, check=False)
         finally:
             try:
                 os.unlink(path)
@@ -86,6 +110,7 @@ class PiperPyBackend(_Backend):
                     self._voice.synthesize_wav(text, wf)
                 else:
                     self._voice.synthesize(text, wf)
+            _prepend_silence(wav, config.TTS_PREBUFFER_MS)
             cmd = ["aplay", "-q"]
             if self.device:
                 cmd += ["-D", self.device]
