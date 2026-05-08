@@ -87,9 +87,25 @@ ACTIVE_SESSION_MAX_SEC = 600
 LIVENESS_WINDOW_FRAMES = 24
 # Min per-frame face crop size used by the pixel-jitter check.
 LIVENESS_CROP_PX = 96
-# Two signals must both clear their thresholds for a face to be "live":
-# 1. relative landmark motion (subtracting whole-face translation, so a
-#    waved photo is not enough -- micro-jitter of features is required).
+
+# Single-frame screen-attack defences (run BEFORE temporal checks; if any
+# fails, the temporal window is cleared so glare/flat content can never
+# accumulate enough frames to be considered live).
+#
+# Specular highlight ratio: fraction of pixels in the face crop whose HSV
+# V channel is > 240. Real indoor faces produce 0-5% (glasses, forehead
+# sheen, glints in eyes). Phone/monitor screens with glare typically
+# light up 10-40% of the visible "face". Lower this if a screen still
+# passes; raise if real faces are flagged.
+LIVENESS_MAX_SPECULAR_RATIO = 0.10
+
+# Texture variance: variance of the Laplacian of the face crop. Real
+# skin has fine pores/wrinkles -> high variance. Phones/monitors smooth
+# the face out -> low variance. Bump this up if a screen still passes.
+LIVENESS_MIN_TEXTURE_VAR = 60.0
+
+# Temporal signals (computed over the sliding window). Both must clear:
+# 1. relative landmark motion (subtracting whole-face translation).
 LIVENESS_REL_MOTION_MIN = 0.45    # pixels (std), in original-image scale
 # 2. face-region pixel jitter beyond camera read noise.
 LIVENESS_PIXEL_JITTER_MIN = 4.0   # mean abs frame-to-frame diff in [0..255]

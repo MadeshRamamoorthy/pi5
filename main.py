@@ -444,9 +444,17 @@ def main():
                 else:
                     banner = None
                     if biggest is not None and not biggest_is_live:
-                        status = (f"liveness: {liveness.last_reason}  "
-                                  f"motion={liveness.last_relative_motion:.2f}  "
-                                  f"jitter={liveness.last_pixel_jitter:.1f}")
+                        status = (
+                            f"liveness: {liveness.last_reason}  "
+                            f"motion={liveness.last_relative_motion:.2f}/"
+                            f"{config.LIVENESS_REL_MOTION_MIN:.2f}  "
+                            f"jitter={liveness.last_pixel_jitter:.1f}/"
+                            f"{config.LIVENESS_PIXEL_JITTER_MIN:.1f}  "
+                            f"glare={liveness.last_specular_ratio:.0%}/"
+                            f"{config.LIVENESS_MAX_SPECULAR_RATIO:.0%}  "
+                            f"tex={liveness.last_texture_var:.0f}/"
+                            f"{config.LIVENESS_MIN_TEXTURE_VAR:.0f}"
+                        )
                     elif biggest_quality_unknown:
                         status = (f"unknown streak {unknown_streak}/"
                                   f"{config.UNKNOWN_FRAMES_BEFORE_REGISTER}")

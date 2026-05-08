@@ -482,9 +482,17 @@ Liveness:
 
 | Setting | Effect |
 |---------|--------|
-| `LIVENESS_WINDOW_FRAMES`     | Sliding window length (24) |
-| `LIVENESS_REL_MOTION_MIN`    | Min facial micro-motion. Lower = more permissive. |
-| `LIVENESS_PIXEL_JITTER_MIN`  | Min face-region pixel jitter beyond camera read noise. |
+| `LIVENESS_WINDOW_FRAMES`        | Sliding window length (24) |
+| `LIVENESS_MAX_SPECULAR_RATIO`   | Reject if more than this fraction of the face crop is near-saturated white. Defeats screens with glare. (0.10) |
+| `LIVENESS_MIN_TEXTURE_VAR`      | Reject if face crop is too smooth (Laplacian variance below this). Defeats flat phone/monitor displays. (60) |
+| `LIVENESS_REL_MOTION_MIN`       | Min facial micro-motion in window. Lower = more permissive. |
+| `LIVENESS_PIXEL_JITTER_MIN`     | Min face-region pixel jitter beyond camera read noise. |
+
+The HUD prints every signal alongside its threshold while liveness is
+failing, e.g. `motion=0.32/0.45  jitter=3.2/4.0  glare=18%/10%
+tex=42/60` — the value before the slash is the live measurement, after
+it is the threshold. Anything where measurement < threshold is the
+reason the face is being rejected, so you tune that knob.
 
 Voice-guided pose capture:
 
@@ -548,8 +556,10 @@ service only do recognition + greeting.
 | `QFontDatabase: Cannot find font directory ... cv2/qt/fonts` | Harmless — opencv-python's bundled Qt has no fonts. `main.py` already sets `QT_LOGGING_RULES` to silence it. To fix properly: `sudo apt install -y fonts-dejavu-core && cp /usr/share/fonts/truetype/dejavu/*.ttf .venv/lib/python3.13/site-packages/cv2/qt/fonts/`. |
 | Wake word never triggers | `arecord -l` to confirm a mic exists; `python -c "import sounddevice as sd; print(sd.query_devices())"` to see what `sounddevice` sees. Set the mic as the default ALSA capture device or export `SD_DEVICE=<index>`. |
 | `[wake-word] disabled: ...` | Either `vosk` / `sounddevice` failed to import (re-run `pip install -r requirements.txt`) or the model dir is missing (re-run §2.8). The app falls back to ACTIVE mode automatically so you can still use it. |
-| Liveness flags real people as "static" | Lighting too flat or face too far. Lower `LIVENESS_PIXEL_JITTER_MIN` and/or `LIVENESS_REL_MOTION_MIN` in `config.py`. |
-| A photo *passes* liveness | Raise the same two thresholds, or shorten `LIVENESS_WINDOW_FRAMES` so the check is more reactive to held-still attacks. |
+| Liveness flags real people as "static" | Lighting too flat or face too far. Lower `LIVENESS_PIXEL_JITTER_MIN` and/or `LIVENESS_REL_MOTION_MIN`. Watch the HUD signals to see which one is actually failing. |
+| Liveness flags real people as "glare/screen" | Glasses or strong forehead sheen. Raise `LIVENESS_MAX_SPECULAR_RATIO` (e.g. 0.15). |
+| Liveness flags real people as "too smooth" | Camera out of focus or face too small. Lower `LIVENESS_MIN_TEXTURE_VAR` (e.g. 30). |
+| A photo on a phone/monitor *passes* liveness | Tighten the screen-attack gates: lower `LIVENESS_MAX_SPECULAR_RATIO` (e.g. 0.06) and raise `LIVENESS_MIN_TEXTURE_VAR` (e.g. 100). Read the live signals off the HUD to find the right values for your camera + lighting. |
 
 ---
 

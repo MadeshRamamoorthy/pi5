@@ -1,25 +1,36 @@
 """Passive liveness check.
 
-Designed to defeat the most common spoofing case for an unattended kiosk:
-a printed photo or a phone screen held up to the camera. Two signals are
-combined over a short sliding window:
+Defeats the most common kiosk-spoofing attempts:
 
-1. Relative landmark motion: per-frame face landmarks, after subtracting
-   the centroid, must show non-trivial standard deviation. This rejects
-   "photo waved in front of camera" because all landmarks move *together*
-   on a 2D photo; subtracting the centroid leaves ~zero relative motion.
-   A live face has small but measurable micro-jitter (breathing, mouth
-   twitches, eye saccades).
+- Printed photo (held still or waved)
+- Phone / monitor screen showing a still image, including glare-on-screen
 
-2. Face-region pixel jitter: the mean absolute frame-to-frame difference
-   inside the face bbox. Real faces produce more pixel jitter than a
-   static photo (camera noise alone is ~1-2 grey levels).
+Combines four signals:
 
-Both must clear their thresholds within the sliding window before the
-face is treated as "live". Limitation: a high-quality video replay on a
-sufficiently large screen can defeat this. For that you need active
-challenges (already done at enrolment) or a dedicated anti-spoofing
-model (out of scope).
+A. SINGLE-FRAME (cheap rejects, run first)
+   1. Specular highlight ratio. Phone/monitor screens reflecting room
+      light produce large near-saturated regions. Real skin is rarely
+      >5% saturated even with glasses or forehead sheen.
+   2. Texture variance (Laplacian). Real skin has fine pore/wrinkle
+      texture; a screen-displayed face is smoothed by camera capture +
+      display + recapture and ends up flatter.
+
+B. TEMPORAL (over a sliding window)
+   3. Relative landmark motion: per-frame landmarks minus their centroid
+      then std over the window. A waved photo's landmarks all move
+      together -> centroid-subtracted std is ~0. A live face shows
+      micro-jitter (breathing, eye saccades, mouth twitches).
+   4. Face-region pixel jitter: mean abs frame-to-frame diff inside the
+      face bbox. Real faces produce more pixel jitter than camera read
+      noise alone.
+
+Single-frame failures CLEAR the temporal window so a screen attack can
+never accumulate enough frames to look "live".
+
+Limitation: a high-quality video replay on a screen large/clean enough
+to dodge the specular and texture gates can still pass. For that, plug
+in a dedicated anti-spoofing model (Silent-Face-Anti-Spoofing or similar)
+or add an active challenge.
 """
 
 from __future__ import annotations
@@ -40,23 +51,23 @@ class _Sample:
 
 
 class LivenessChecker:
-    """Maintains a sliding window per face track. Currently only tracks the
-    largest face (which is what main.py asks about anyway)."""
-
     def __init__(self) -> None:
         self._window: deque[_Sample] = deque(maxlen=config.LIVENESS_WINDOW_FRAMES)
         self.last_relative_motion = 0.0
         self.last_pixel_jitter = 0.0
+        self.last_specular_ratio = 0.0
+        self.last_texture_var = 0.0
         self.last_reason = "warming up"
 
     def reset(self) -> None:
         self._window.clear()
         self.last_relative_motion = 0.0
         self.last_pixel_jitter = 0.0
+        self.last_specular_ratio = 0.0
+        self.last_texture_var = 0.0
         self.last_reason = "warming up"
 
     def update(self, frame: np.ndarray, det) -> bool:
-        """Push a new (frame, detection) sample and return current liveness."""
         if det is None:
             self.reset()
             return False
@@ -70,20 +81,39 @@ class LivenessChecker:
             self.last_reason = "face too small"
             return False
 
-        gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, (config.LIVENESS_CROP_PX, config.LIVENESS_CROP_PX))
+        crop_bgr = frame[y1:y2, x1:x2]
+        color = cv2.resize(
+            crop_bgr, (config.LIVENESS_CROP_PX, config.LIVENESS_CROP_PX)
+        )
+        gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+
+        # ---- A. Single-frame screen-attack gates ----------------------
+        hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
+        specular_ratio = float((hsv[:, :, 2] > 240).mean())
+        self.last_specular_ratio = specular_ratio
+        if specular_ratio > config.LIVENESS_MAX_SPECULAR_RATIO:
+            self._window.clear()
+            self.last_reason = f"glare/screen ({specular_ratio:.0%} bright)"
+            return False
+
+        texture_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        self.last_texture_var = texture_var
+        if texture_var < config.LIVENESS_MIN_TEXTURE_VAR:
+            self._window.clear()
+            self.last_reason = f"too smooth (tex={texture_var:.0f})"
+            return False
+
+        # ---- B. Temporal sliding-window checks ------------------------
         self._window.append(_Sample(det.landmarks.copy(), gray))
 
         if len(self._window) < self._window.maxlen // 2:
             self.last_reason = "warming up"
             return False
 
-        # 1) Relative landmark motion: subtract per-frame centroid first.
         lms = np.stack([s.landmarks for s in self._window])           # (T, 5, 2)
         centred = lms - lms.mean(axis=1, keepdims=True)
         rel_motion = float(centred.std(axis=0).mean())
 
-        # 2) Pixel jitter inside the face crop.
         grays = np.stack([s.gray_face for s in self._window]).astype(np.int16)
         diffs = np.abs(np.diff(grays, axis=0))
         pixel_jitter = float(diffs.mean())
