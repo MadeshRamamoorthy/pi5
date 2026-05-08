@@ -680,7 +680,48 @@ HUD transcript panel:
 |---------|--------|
 | `SHOW_TRANSCRIPT_PANEL`   | Master switch. False keeps the camera-only window. |
 | `TRANSCRIPT_PANEL_WIDTH`  | Pixels added to the right of the camera (420). |
-| `TRANSCRIPT_MAX_EVENTS`   | Ring-buffer size; oldest events scroll out (24). |
+| `TRANSCRIPT_MAX_EVENTS`   | Ring-buffer size; oldest events scroll out (16). |
+| `DISPLAY_SCALE`           | Scales the whole composed window at display time only. Detection runs on full-res frames -- this just shrinks the cv2 window so it fits a small screen. (1.0) |
+| `CAMERA_RESOLUTION`       | Source resolution from picamera2 (1280, 720). |
+
+#### Fitting a small screen (e.g. a 10.1" Pi-mounted display)
+
+The camera+panel composite is roughly `CAMERA_RESOLUTION[0] +
+TRANSCRIPT_PANEL_WIDTH` wide × `CAMERA_RESOLUTION[1]` tall — by default
+about **1700 × 720**, which overflows most 10.1" panels.
+
+Two ways to make it fit. Pick whichever matches your priorities.
+
+**Option A — display-only scale (recommended).** Detection runs on the
+full-res frame so accuracy is unchanged; the cv2 window is shrunk just
+before `imshow`. One knob:
+
+```python
+# config.py
+DISPLAY_SCALE = 0.75    # for 1280 x 800 panels  -> ~1275 x 540
+DISPLAY_SCALE = 0.60    # for 1024 x 600 panels  -> ~1020 x 432
+```
+
+**Option B — shrink at the source.** Lower-res camera capture (faster
+and lighter) plus a narrower panel. Quality thresholds stay valid as
+long as faces still occupy the same fraction of the frame — but if
+you're standing far back, drop `QUALITY_MIN_FACE_PIXELS` proportionally.
+
+```python
+# config.py — for a 1280 x 800 panel
+CAMERA_RESOLUTION = (800, 480)
+TRANSCRIPT_PANEL_WIDTH = 320
+# total: 1120 x 480, fits with headroom
+
+# config.py — for a 1024 x 600 panel
+CAMERA_RESOLUTION = (640, 480)
+TRANSCRIPT_PANEL_WIDTH = 280
+QUALITY_MIN_FACE_PIXELS = 70    # was 110; you're at half-res
+# total: 920 x 480, fits 1024 x 600
+```
+
+You can also combine the two: keep the camera at native res for the
+detector, then `DISPLAY_SCALE = 0.6` so the on-screen window fits.
 
 The HUD prints every signal alongside its threshold while liveness is
 failing, e.g. `motion=0.32/0.45  jitter=3.2/4.0  glare=18%/10%

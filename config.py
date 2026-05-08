@@ -38,7 +38,19 @@ CAMERA_FRAMERATE = 30
 # the right. Set False to keep the simple camera-only window.
 SHOW_TRANSCRIPT_PANEL = True
 TRANSCRIPT_PANEL_WIDTH = 420       # pixels added to the right of the camera
-TRANSCRIPT_MAX_EVENTS = 24         # ring-buffer length
+TRANSCRIPT_MAX_EVENTS = 16         # ring-buffer length
+
+# Final display scale applied after compositing camera + transcript.
+# Keep at 1.0 for full-resolution display. Lower values fit the window
+# onto smaller screens (recommended values below). Detection / liveness
+# / quality logic still runs on the full-resolution camera frame, so
+# accuracy is unaffected -- only the displayed window shrinks.
+#
+#   1.0  -> native (camera + panel = ~1700 x 720)
+#   0.75 -> ~1275 x 540   (fits 1280 x 800 panels)
+#   0.6  -> ~1020 x 432   (fits 1024 x 600 panels)
+#   0.5  -> ~850  x 360
+DISPLAY_SCALE = 1.0
 
 # ---- Face quality gate ---------------------------------------------------
 # A "real" face must clear ALL of these before recognition / registration.

@@ -540,9 +540,14 @@ def main():
                 if transcript is not None:
                     panel = transcript.render(frame.shape[0], config.TRANSCRIPT_PANEL_WIDTH)
                     composed = compose_with_camera(frame, panel)
-                    cv2.imshow("Face Recognition", composed)
                 else:
-                    cv2.imshow("Face Recognition", frame)
+                    composed = frame
+                if config.DISPLAY_SCALE != 1.0:
+                    new_w = max(1, int(composed.shape[1] * config.DISPLAY_SCALE))
+                    new_h = max(1, int(composed.shape[0] * config.DISPLAY_SCALE))
+                    composed = cv2.resize(composed, (new_w, new_h),
+                                          interpolation=cv2.INTER_AREA)
+                cv2.imshow("Face Recognition", composed)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
