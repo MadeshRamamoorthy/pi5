@@ -7,7 +7,7 @@
   POST /api/employees/<id>/delete
 
 Run:
-    ./start_admin.sh        # binds to 0.0.0.0:8080 by default
+    ./start_admin.sh        # binds to 0.0.0.0:8081 by default
     ADMIN_PORT=9000 ./start_admin.sh
 
 The DB is the same SQLite file the main app uses. SQLite supports
@@ -175,7 +175,7 @@ def api_delete(emp_id):
 
 def main():
     host = os.environ.get("ADMIN_HOST", "0.0.0.0")
-    port = int(os.environ.get("ADMIN_PORT", "8080"))
+    port = int(os.environ.get("ADMIN_PORT", "8081"))
     print(f"pi5 admin UI on http://{host}:{port}")
     app.run(host=host, port=port, debug=False)
 

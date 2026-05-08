@@ -8,7 +8,7 @@ set -euo pipefail
 
 : "${PI5_DIR:=/home/echo/Documents/code/pi5}"
 : "${ADMIN_HOST:=0.0.0.0}"
-: "${ADMIN_PORT:=8080}"
+: "${ADMIN_PORT:=8081}"
 
 cd "$PI5_DIR"
 

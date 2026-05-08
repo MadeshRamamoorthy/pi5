@@ -553,12 +553,13 @@ python admin.py path                       # absolute path to faces.db
 
 #### Web UI
 
-A minimal Flask app on port 8080 (configurable). Lets you list, rename,
-and delete employees from a browser. SQLite handles concurrent access,
-so it can run alongside `./start.sh` on the same Pi.
+A minimal Flask app on port 8081 (configurable; 8080 is left for
+Open WebUI / other services). Lets you list, rename, and delete
+employees from a browser. SQLite handles concurrent access, so it can
+run alongside `./start.sh` on the same Pi.
 
 ```bash
-./start_admin.sh                           # http://0.0.0.0:8080
+./start_admin.sh                           # http://0.0.0.0:8081
 ADMIN_HOST=127.0.0.1 ADMIN_PORT=9000 ./start_admin.sh
 ```
 
