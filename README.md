@@ -346,21 +346,32 @@ export SD_DEVICE=<index>     # picked up automatically by sounddevice
 
 The default voice uses `pyttsx3` + `espeak-ng` — fast but robotic.
 **Piper** is a neural TTS engine that runs on-device and produces a much
-more natural voice. The app auto-detects whether Piper is installed; if
-not, it falls back to `pyttsx3` automatically. Skip this section to keep
-the espeak voice.
+more natural voice. The app auto-detects which Piper install is
+available and falls back to `pyttsx3` if none is. Skip this section to
+keep the espeak voice.
 
-Install both the binary and a voice model into the project:
+There are two flavours; you only need one. The Python package is the
+preferred path because it loads the voice model once at startup
+(subsequent utterances are noticeably faster).
+
+#### Option 1 (preferred): Python `piper-tts` / `piper1-gpl`
 
 ```bash
 cd /home/echo/Documents/code/pi5
-mkdir -p tools models/piper
+source .venv/bin/activate
+pip install piper-tts        # piper1-gpl rewrite; pure Python + onnxruntime
 ```
 
-**Binary** — grab the latest `piper_linux_aarch64.tar.gz` from
-https://github.com/rhasspy/piper/releases:
+Wheels are published for cp38–cp312. **On Python 3.13 (Trixie default)
+this currently fails** because no cp313 wheel exists yet — fall through
+to Option 2.
+
+#### Option 2: CLI binary from rhasspy/piper releases
+
+Project-local install so it doesn't pollute the system:
 
 ```bash
+mkdir -p tools models/piper
 cd tools
 wget https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz
 tar -xzf piper_linux_aarch64.tar.gz
@@ -402,11 +413,15 @@ echo "Hello, this is Amy speaking." | tools/piper/piper \
 aplay -D plughw:CARD=PowerConf,DEV=0 /tmp/test.wav
 ```
 
-`./start.sh` should now print `[TTS] using Piper voice: en_US-amy-medium.onnx`
-on launch instead of the espeak line. To switch voices, drop a different
-`.onnx` + `.onnx.json` pair into `models/piper/` and update
-`PIPER_MODEL_PATH` in `config.py`. To force the espeak voice anyway, set
-`TTS_BACKEND = "pyttsx3"` in `config.py`.
+`./start.sh` should now print one of:
+
+- `[TTS] using Piper (Python): en_US-amy-medium.onnx`  ← Option 1
+- `[TTS] using Piper (CLI): en_US-amy-medium.onnx ...` ← Option 2
+- `[TTS] using pyttsx3 / espeak-ng`                    ← neither installed
+
+To switch voices, drop a different `.onnx` + `.onnx.json` pair into
+`models/piper/` and update `PIPER_MODEL_PATH` in `config.py`. To force
+the espeak voice anyway, set `TTS_BACKEND = "pyttsx3"` in `config.py`.
 
 ---
 
