@@ -25,6 +25,9 @@ set -euo pipefail
 : "${SD_DEVICE:=1}"
 : "${AUDIO_OUTPUT_DEVICE:=plughw:CARD=PowerConf,DEV=0}"
 : "${EXTRA_ARGS:=--auto-register}"
+# OpenAI is the preferred chat backend; Ollama on localhost is the fallback
+# when this is unset or unreachable.
+: "${OPENAI_API_KEY:=}"
 
 # Silence the harmless cv2/Qt font warning (main.py also sets this; doing
 # it here too means the warning is gone even before Python starts).
@@ -75,6 +78,7 @@ source .venv/bin/activate
 
 export SD_DEVICE
 export AUDIO_OUTPUT_DEVICE
+export OPENAI_API_KEY
 
 # Probe X display reliably *after* venv activation -- uses libX11 via
 # ctypes so we don't depend on x11-utils being installed.

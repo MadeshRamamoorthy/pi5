@@ -24,6 +24,24 @@ CREATE TABLE IF NOT EXISTS face_embeddings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_face_emp ON face_embeddings(emp_id);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    description TEXT,
+    ordering    INTEGER DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS interactions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    emp_id     TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    ts         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(emp_id, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
 """
 
 
@@ -139,6 +157,86 @@ class FaceDB:
         )
         self.conn.commit()
         return len(ids)
+
+    # ---- projects --------------------------------------------------------
+
+    def list_projects(self):
+        """Return [(id, title, description, ordering, created_at)] sorted
+        by (ordering, id)."""
+        return self.conn.execute(
+            "SELECT id, title, description, ordering, created_at "
+            "FROM projects ORDER BY ordering, id"
+        ).fetchall()
+
+    def get_project(self, project_id: int):
+        return self.conn.execute(
+            "SELECT id, title, description, ordering, created_at "
+            "FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+
+    def add_project(self, title: str, description: str = "",
+                    ordering: int = 0) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO projects (title, description, ordering) VALUES (?, ?, ?)",
+            (title, description, ordering),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def update_project(self, project_id: int, *, title: str | None = None,
+                       description: str | None = None,
+                       ordering: int | None = None) -> bool:
+        sets, vals = [], []
+        if title is not None:
+            sets.append("title = ?")
+            vals.append(title)
+        if description is not None:
+            sets.append("description = ?")
+            vals.append(description)
+        if ordering is not None:
+            sets.append("ordering = ?")
+            vals.append(ordering)
+        if not sets:
+            return False
+        vals.append(project_id)
+        cur = self.conn.execute(
+            f"UPDATE projects SET {', '.join(sets)} WHERE id = ?",
+            vals,
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_project(self, project_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM projects WHERE id = ?", (project_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    # ---- interaction counter --------------------------------------------
+
+    def record_interaction(self, emp_id: str, session_id: str) -> bool:
+        """Returns True iff this is a new (emp_id, session_id) pair."""
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO interactions (emp_id, session_id) VALUES (?, ?)",
+            (emp_id, session_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def interaction_count_total(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM interactions"
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def interaction_count_session(self, session_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM interactions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
 
 
 def _to_blob(vec: np.ndarray) -> bytes:

@@ -1,27 +1,49 @@
-"""Live face recognition with wake-word activation, passive liveness,
-voice-guided enrolment, and re-registration verification.
+"""Echo AI kiosk loop.
+
+State machine:
+
+  IDLE   --(wake word)-->  ACTIVE
+  ACTIVE --(30s no event)-> IDLE
+
+In ACTIVE state, the right half of the screen is a tabbed panel:
+  PROJECTS  (default)  - read-only list of projects from the DB.
+  REGISTER             - in-window text fields to enrol a new face.
+  CHAT                 - 5 questions per session, OpenAI w/ Ollama fallback.
+
+In IDLE the camera keeps capturing (and the recogniser keeps running so we
+can wake on faces if we ever want to), but the cv2 window shows the blue
+welcome screen with weather and counter instead.
 
 Press keys in the OpenCV window:
-  q  quit
-  r  force registration of the largest visible face (only in ACTIVE state)
+  q         quit
+  P / R / C switch tab in ACTIVE
+  V         (in CHAT) toggle voice/keyboard input
+  Tab       (in REGISTER) switch between emp_id / name fields
+  Enter     submit current field / submit chat question
+  Esc       cancel current REGISTER / CHAT input
 """
 
 from __future__ import annotations
 
 # Suppress the harmless Qt font warning from opencv-python's bundled Qt
-# before cv2 is imported. (See README troubleshooting.)
+# before cv2 is imported.
 import os
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
 
 import argparse
-import os
 import time
+import uuid
+from concurrent.futures import Future
 
 import cv2
 import numpy as np
 from picamera2 import Picamera2
 
 import config
+import views
+from async_tts import AsyncTTS
+from blink import BlinkChecker
+from chat import ChatBackendError, ChatBudgetError, ChatClient
 from database import FaceDB
 from hailo_infer import HailoFacePipeline, align_face
 from liveness import LivenessChecker
@@ -31,13 +53,12 @@ from quality import (
     landmarks_drift,
     shift_matches_direction,
 )
-from blink import BlinkChecker
-from transcript import Transcript, compose_with_camera
 from tts import make_backend
 from wake_word import WakeWordError, WakeWordListener
+from weather import WeatherPoller
 
 
-# ---------- helpers ---------------------------------------------------------
+# ---------- helpers --------------------------------------------------------
 
 
 def cosine_match(query: np.ndarray, matrix: np.ndarray):
@@ -56,11 +77,16 @@ def best_self_match(embeddings, db_ids, db_matrix, emp_id) -> float:
     return max(float((sub @ e).max()) for e in embeddings)
 
 
-class SilentLearner:
-    """Quietly appends new embeddings to a recognised person's gallery so
-    recognition gets more robust over time. Rate-limited per person and
-    capped per person to keep the DB bounded."""
+def largest_detection(dets):
+    if not dets:
+        return None
+    return max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
 
+
+# ---------- silent learning ------------------------------------------------
+
+
+class SilentLearner:
     def __init__(self, db: FaceDB):
         self.db = db
         self._last_added: dict[str, float] = {}
@@ -74,70 +100,45 @@ class SilentLearner:
         now = time.time()
         if now - self._last_added.get(emp_id, 0) < config.SILENT_LEARN_MIN_INTERVAL_SEC:
             return False
-
         existing = self.db.get_embeddings(emp_id)
         if existing.shape[0] > 0:
             sims = existing @ embedding
             if float(sims.max()) > config.SILENT_LEARN_MAX_SIMILARITY:
-                # Already have an essentially-identical sample. Skip.
                 return False
-
         self.db.add_embedding(emp_id, embedding)
         self._last_added[emp_id] = now
-
-        # Cap per-person sample count by trimming the oldest extras.
         cap = config.SILENT_LEARN_MAX_SAMPLES_PER_PERSON
         n = self.db.count_embeddings(emp_id)
         if n > cap:
-            dropped = self.db.trim_embeddings(emp_id, cap)
-            print(f"[silent-learn] +1 sample for {emp_id} ({name}); "
-                  f"capped at {cap}, dropped {dropped} older.")
-        else:
-            print(f"[silent-learn] +1 sample for {emp_id} ({name}); now {n}.")
+            self.db.trim_embeddings(emp_id, cap)
         return True
-
-
-def largest_detection(dets):
-    if not dets:
-        return None
-    return max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
 
 
 # ---------- voice ----------------------------------------------------------
 
 
 class Greeter:
-    """Speaks each recognised face once per cooldown, regardless of how
-    many people are in frame. Keeps a per-emp_id timestamp so the same
-    person isn't re-greeted while they linger."""
+    """Async-TTS-backed greeter with per-emp_id cooldown."""
 
-    def __init__(self, transcript: "Transcript | None" = None):
-        self.backend = make_backend()
+    def __init__(self, async_tts: AsyncTTS):
+        self._tts = async_tts
         self._last_greeted: dict[str, float] = {}
-        self.transcript = transcript
-        if config.AUDIO_OUTPUT_DEVICE:
-            print(f"[TTS] routing audio to ALSA device: {config.AUDIO_OUTPUT_DEVICE}")
 
     def greet(self, emp_id: str, name: str) -> bool:
-        """Returns True iff we actually spoke."""
         now = time.time()
         if now - self._last_greeted.get(emp_id, 0.0) < config.GREET_COOLDOWN_SEC:
             return False
         self._last_greeted[emp_id] = now
         msg = f"Hello {name}, welcome!"
         print(f"[GREET] {msg}")
-        if self.transcript:
-            self.transcript.system(msg)
-        self.backend.speak(msg)
+        self._tts.speak(msg)
         return True
 
-    def say(self, text: str):
+    def say(self, text: str) -> None:
         print(f"[TTS] {text}")
-        if self.transcript:
-            self.transcript.system(text)
-        self.backend.speak(text)
+        self._tts.speak(text)
 
-    def reset_last(self):
+    def reset_last(self) -> None:
         self._last_greeted.clear()
 
 
@@ -159,16 +160,23 @@ def grab_frame(cam: Picamera2) -> np.ndarray:
     return cam.capture_array()
 
 
-# ---------- HUD ------------------------------------------------------------
+def resize_to_camera_pane(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Letterbox the camera frame into a (width x height) pane."""
+    h, w = frame.shape[:2]
+    scale = min(width / w, height / h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    x_off = (width - new_w) // 2
+    y_off = (height - new_h) // 2
+    canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+    return canvas
 
 
-def draw_hud(frame, dets, label_for, *, banner=None, prompt=None,
-             progress=None, status=None):
-    if banner:
-        # Big banner across the top
-        cv2.rectangle(frame, (0, 0), (frame.shape[1], 50), (0, 0, 0), -1)
-        cv2.putText(frame, banner, (10, 34),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+# ---------- HUD draw on camera frame ---------------------------------------
+
+
+def draw_face_overlays(frame: np.ndarray, dets, label_for) -> None:
     for d in dets:
         x1, y1, x2, y2 = (int(v) for v in d.bbox)
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -176,25 +184,186 @@ def draw_hud(frame, dets, label_for, *, banner=None, prompt=None,
         if label:
             cv2.putText(frame, label, (x1, max(0, y1 - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-    y = 80 if banner else 30
-    if prompt:
-        head = f"[{progress[0]}/{progress[1]}] {prompt}" if progress else prompt
-        cv2.putText(frame, head, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-        y += 30
-    if status:
-        cv2.putText(frame, status, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
 
-# ---------- voice-guided pose capture --------------------------------------
+# ---------- right-panel state machine --------------------------------------
+
+
+class RightPanel:
+    """Tabbed right-side panel: PROJECTS / REGISTER / CHAT."""
+
+    def __init__(self, db: FaceDB, chat: ChatClient):
+        self.db = db
+        self.chat = chat
+        self.tab = "PROJECTS"
+        self.projects: list = []
+        self.projects_loaded_at = 0.0
+        self.selected_idx = 0
+        self.scroll = 0
+        self.register_form = views.RegisterFormState()
+        self.register_message = ""
+        self.chat_history: list[tuple[str, str]] = []
+        self.chat_input_mode = config.CHAT_VOICE_MODE_DEFAULT
+        self.chat_partial = ""
+        self.chat_pending_future: Future | None = None
+        self.chat_pending_started_at = 0.0
+
+    # ---- session lifecycle --------------------------------------------
+
+    def session_reset(self) -> None:
+        self.tab = "PROJECTS"
+        self.selected_idx = 0
+        self.scroll = 0
+        self.register_form = views.RegisterFormState()
+        self.register_message = ""
+        self.chat_history = []
+        self.chat_input_mode = config.CHAT_VOICE_MODE_DEFAULT
+        self.chat_partial = ""
+        self.chat_pending_future = None
+
+    def reload_projects(self) -> None:
+        self.projects = self.db.list_projects()
+        self.projects_loaded_at = time.time()
+
+    # ---- tab switching ------------------------------------------------
+
+    def set_tab(self, tab: str) -> None:
+        if tab not in ("PROJECTS", "REGISTER", "CHAT"):
+            return
+        self.tab = tab
+        if tab == "PROJECTS":
+            self.reload_projects()
+
+    # ---- rendering ----------------------------------------------------
+
+    def render(self, session_count: int) -> np.ndarray:
+        size = (config.PANEL_WIDTH, config.WINDOW_SIZE[1])
+        # Refresh project list every ~5 s so admin edits show up.
+        if (self.tab == "PROJECTS"
+                and time.time() - self.projects_loaded_at > 5):
+            self.reload_projects()
+
+        if self.tab == "PROJECTS":
+            return views.render_projects_panel(
+                self.projects, self.selected_idx, self.scroll,
+                session_count, size,
+            )
+        if self.tab == "REGISTER":
+            return views.render_register_panel(
+                self.register_form, self.register_message,
+                session_count, size,
+            )
+        if self.tab == "CHAT":
+            remaining = self.chat.budget.remaining(self._chat_emp_id)
+            partial = self.chat_partial
+            if self.chat_pending_future is not None:
+                dots = "." * (int(time.time() * 2) % 4)
+                partial = f"thinking{dots}"
+            return views.render_chat_panel(
+                self.chat_history, remaining, self.chat_input_mode,
+                partial, self.chat.status(),
+                session_count, size,
+            )
+        return views.render_projects_panel([], 0, 0, session_count, size)
+
+    # ---- keyboard input ----------------------------------------------
+
+    _chat_emp_id: str = "anon"
+
+    def set_chat_emp_id(self, emp_id: str) -> None:
+        self._chat_emp_id = emp_id
+
+    def handle_key(self, key: int) -> dict:
+        """Returns a dict describing side effects, e.g.
+        {"submit_register": True} or {"submit_chat": "..."} so the main
+        loop can run blocking flows (capture poses, show TTS replies)."""
+        out: dict = {}
+        if key == -1:
+            return out
+        # Tab switching with single keys (only when not focused on a text field)
+        if self.tab == "REGISTER":
+            return self._handle_key_register(key)
+        if self.tab == "CHAT":
+            return self._handle_key_chat(key)
+        # PROJECTS tab navigation.
+        if key == ord("p") or key == ord("P"):
+            self.set_tab("PROJECTS")
+        elif key == ord("r") or key == ord("R"):
+            self.set_tab("REGISTER")
+        elif key == ord("c") or key == ord("C"):
+            self.set_tab("CHAT")
+        elif key == 82:   # up arrow (linux)
+            self.selected_idx = max(0, self.selected_idx - 1)
+            if self.selected_idx < self.scroll:
+                self.scroll = self.selected_idx
+        elif key == 84:   # down arrow
+            self.selected_idx = min(len(self.projects) - 1,
+                                    self.selected_idx + 1)
+        return out
+
+    def _handle_key_register(self, key: int) -> dict:
+        out: dict = {}
+        f = self.register_form
+        if key == 27:           # Esc -> back to projects
+            self.set_tab("PROJECTS")
+            self.register_form = views.RegisterFormState()
+            self.register_message = ""
+            return out
+        if key == 9:            # Tab -> switch field
+            f.focused = "name" if f.focused == "emp_id" else "emp_id"
+            return out
+        if key in (10, 13):     # Enter -> submit
+            if not f.emp_id.strip():
+                self.register_message = "Employee ID is required."
+                return out
+            if not f.name.strip():
+                self.register_message = "Name is required."
+                return out
+            out["submit_register"] = True
+            return out
+        if key == 8 or key == 127:  # Backspace
+            cur = getattr(f, f.focused)
+            setattr(f, f.focused, cur[:-1])
+            return out
+        if 32 <= key < 127:
+            cur = getattr(f, f.focused)
+            setattr(f, f.focused, cur + chr(key))
+        return out
+
+    def _handle_key_chat(self, key: int) -> dict:
+        out: dict = {}
+        if key == 27:           # Esc -> back to projects
+            self.set_tab("PROJECTS")
+            self.chat_partial = ""
+            return out
+        if key == ord("v") or key == ord("V"):
+            self.chat_input_mode = (
+                "keyboard" if self.chat_input_mode == "voice" else "voice"
+            )
+            self.chat_partial = ""
+            return out
+        if self.chat_input_mode != "keyboard":
+            return out
+        if key == 8 or key == 127:
+            self.chat_partial = self.chat_partial[:-1]
+            return out
+        if key in (10, 13):
+            q = self.chat_partial.strip()
+            if q:
+                out["submit_chat"] = q
+                self.chat_partial = ""
+            return out
+        if 32 <= key < 127:
+            self.chat_partial += chr(key)
+        return out
+
+
+# ---------- voice-guided pose capture -------------------------------------
 
 
 def capture_with_prompts(
-    cam: Picamera2,
-    pipe: HailoFacePipeline,
-    greeter: Greeter,
-    show_preview: bool,
+    cam: Picamera2, pipe: HailoFacePipeline, greeter: Greeter,
+    tts: AsyncTTS,
 ) -> list[np.ndarray]:
     embeddings: list[np.ndarray] = []
     prompts = config.POSE_PROMPTS
@@ -203,12 +372,14 @@ def capture_with_prompts(
 
     for i, (prompt, direction) in enumerate(prompts, start=1):
         greeter.say(prompt)
+        # Wait for the prompt to finish playing before we start watching
+        # for the user's pose change. Keeps the camera FPS up the whole time.
+        tts.wait_idle(timeout=8)
         hold_until = time.time() + config.POSE_HOLD_SEC
         deadline = time.time() + config.POSE_HOLD_SEC + config.POSE_CAPTURE_TIMEOUT_SEC
         stable_since = None
         last_lms = None
         captured = False
-        status = "waiting for pose change..." if direction else "waiting..."
 
         while not captured and time.time() < deadline:
             frame = grab_frame(cam)
@@ -216,9 +387,8 @@ def capture_with_prompts(
                                config.DETECTOR_NMS_IOU)
             det = largest_detection(dets)
             ok = False
-            reason = "no face"
             if det is not None:
-                ok, reason = is_quality_face(det, frame.shape)
+                ok, _ = is_quality_face(det, frame.shape)
 
             if ok and time.time() >= hold_until:
                 anchor, eye_dist = landmark_anchor(det)
@@ -233,7 +403,6 @@ def capture_with_prompts(
                     if last_lms is not None and landmarks_drift(det.landmarks, last_lms) <= config.POSE_STABLE_PIXEL_TOL:
                         if stable_since is None:
                             stable_since = time.time()
-                            status = "hold still..."
                         elif time.time() - stable_since >= config.POSE_STABLE_SEC:
                             aligned = align_face(frame, det.landmarks)
                             embeddings.append(pipe.embed(aligned))
@@ -241,119 +410,102 @@ def capture_with_prompts(
                                 baseline_anchor = anchor
                                 baseline_eye_dist = eye_dist
                             captured = True
-                            status = "captured"
                     else:
                         stable_since = None
-                        status = "hold still..."
                     last_lms = det.landmarks
                 else:
-                    status = f"please move {direction}"
                     stable_since = None
                     last_lms = det.landmarks
             else:
-                status = reason
                 stable_since = None
                 last_lms = None
 
-            if show_preview:
-                draw_hud(frame, dets, lambda d: "", prompt=prompt,
-                         progress=(len(embeddings), len(prompts)),
-                         status=status)
-                cv2.imshow("Face Recognition", frame)
-                cv2.waitKey(20)
-
         if not captured:
             greeter.say("Skipping this pose. Let's continue.")
+            tts.wait_idle(timeout=4)
     return embeddings
 
 
-# ---------- registration ---------------------------------------------------
+# ---------- registration flow (tab-driven) --------------------------------
 
 
-def prompt_registration(
-    db: FaceDB,
-    greeter: Greeter,
-    cam: Picamera2,
-    pipe: HailoFacePipeline,
-    show_preview: bool,
+def run_in_panel_registration(
+    panel: RightPanel, db: FaceDB, greeter: Greeter, tts: AsyncTTS,
+    cam: Picamera2, pipe: HailoFacePipeline,
 ) -> bool:
-    greeter.say("I do not recognise you. Please register at the console.")
-    print("\n--- New face detected ---")
-    emp_id = input("Employee ID: ").strip()
-    if not emp_id:
-        print("Skipped.")
-        return False
+    """Called when the REGISTER tab submits. Captures poses and writes
+    to the DB. Returns True on successful (re-)registration."""
+    f = panel.register_form
+    f.busy = True
+    panel.register_message = "Capturing samples — follow the voice prompts."
 
-    is_existing = db.employee_exists(emp_id)
+    is_existing = db.employee_exists(f.emp_id)
     if is_existing:
-        name = db.get_name(emp_id) or ""
-        print(f"Employee {emp_id} already exists ({name}). Will verify and append.")
+        existing_name = db.get_name(f.emp_id) or ""
+        greeter.say(f"{f.emp_id} already exists. Verifying.")
     else:
-        name = input("Name: ").strip()
-        if not name:
-            print("Skipped.")
-            return False
+        existing_name = f.name
 
-    embeddings = capture_with_prompts(cam, pipe, greeter, show_preview)
+    embeddings = capture_with_prompts(cam, pipe, greeter, tts)
     if not embeddings:
-        greeter.say("Registration failed. No face captured.")
+        panel.register_message = "Registration failed. No face captured."
+        f.busy = False
         return False
 
     if is_existing:
         emp_ids, _, matrix = db.load_all()
-        score = best_self_match(embeddings, emp_ids, matrix, emp_id)
+        score = best_self_match(embeddings, emp_ids, matrix, f.emp_id)
         if score < config.REREGISTER_MATCH_THRESHOLD:
-            greeter.say(
-                "This face does not match the existing employee. Registration refused."
-            )
-            print(f"Refused: best self-match {score:.2f} < {config.REREGISTER_MATCH_THRESHOLD:.2f}")
+            panel.register_message = "This face does not match the existing employee."
+            greeter.say("Registration refused.")
+            f.busy = False
             return False
-        for emb in embeddings:
-            db.add_embedding(emp_id, emb)
-        greeter.say(f"Added {len(embeddings)} new samples for {name}.")
-        print(f"Re-registered {name} ({emp_id}): +{len(embeddings)} samples (self-match {score:.2f}).\n")
+        for e in embeddings:
+            db.add_embedding(f.emp_id, e)
+        greeter.say(f"Added {len(embeddings)} new samples.")
+        panel.register_message = f"Updated {existing_name} ({f.emp_id})."
     else:
-        db.add_employee(emp_id, name, embeddings)
-        greeter.say(f"Thank you {name}, you are now registered.")
-        print(f"Registered {name} ({emp_id}) with {len(embeddings)} samples.\n")
+        db.add_employee(f.emp_id, f.name, embeddings)
+        greeter.say(f"Thank you {f.name}, you are now registered.")
+        panel.register_message = f"Registered {f.name} ({f.emp_id})."
 
-    greeter.reset_last()
+    f.busy = False
+    panel.set_tab("PROJECTS")  # back to default after success
     return True
 
 
-# ---------- main loop ------------------------------------------------------
+# ---------- main loop -----------------------------------------------------
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-display", action="store_true")
     parser.add_argument("--auto-register", action="store_true")
-    parser.add_argument(
-        "--no-wake-word",
-        action="store_true",
-        help="Skip Vosk and start in ACTIVE state immediately.",
-    )
+    parser.add_argument("--no-wake-word", action="store_true")
     args = parser.parse_args()
     show_preview = not args.no_display
 
     pipe = HailoFacePipeline(config.DETECTOR_HEF, config.EMBEDDER_HEF)
     db = FaceDB()
-    transcript = Transcript(max_events=config.TRANSCRIPT_MAX_EVENTS) \
-        if config.SHOW_TRANSCRIPT_PANEL else None
-    greeter = Greeter(transcript=transcript)
+    weather = WeatherPoller()
+    weather.start()
+    chat = ChatClient()
+    backend = make_backend()
+    tts = AsyncTTS(backend)
+    greeter = Greeter(tts)
     cam = open_camera()
     liveness = LivenessChecker()
     learner = SilentLearner(db)
-    blinker = BlinkChecker(pipe, grab_frame, draw_hud)
+    blinker = BlinkChecker(pipe, grab_frame, lambda *a, **kw: None)
+    panel = RightPanel(db, chat)
+    panel.reload_projects()
 
     listener: WakeWordListener | None = None
     state = "ACTIVE" if args.no_wake_word else "IDLE"
-
     if not args.no_wake_word:
         try:
             listener = WakeWordListener(
-                config.VOSK_MODEL_DIR,
-                config.WAKE_WORD,
+                config.VOSK_MODEL_DIR, config.WAKE_WORD,
                 samplerate=config.WAKE_WORD_SAMPLERATE,
                 blocksize=config.WAKE_WORD_BLOCKSIZE,
             )
@@ -361,7 +513,6 @@ def main():
             print(f"[wake-word] listening for: '{config.WAKE_WORD}'")
         except WakeWordError as exc:
             print(f"[wake-word] disabled: {exc}")
-            print("[wake-word] starting in ACTIVE state. Use --no-wake-word to silence this.")
             state = "ACTIVE"
 
     emp_ids, names, matrix = db.load_all()
@@ -369,20 +520,18 @@ def main():
     print(f"Initial state: {state}")
 
     unknown_streak = 0
-    # Resets on any "new" event (different person greeted, an unknown face is
-    # in frame, registration completed). Same recognised person standing in
-    # frame does NOT count as new -- we still time out and go IDLE.
     last_interaction_at = 0.0
     activated_at = 0.0
-    # Per-session blink confirmation. Cleared on each ACTIVE entry.
     blink_confirmed: set[str] = set()
-    banner_idle = f"Say '{config.WAKE_WORD}' to start recognition"
+    session_id = ""
+    seen_in_session: set[str] = set()
+    last_known_emp_id = "anon"
 
     try:
         while True:
             frame = grab_frame(cam)
 
-            # ---- wake-word transition (IDLE -> ACTIVE) -----------------
+            # ---- IDLE -> ACTIVE on wake word -------------------------
             if state == "IDLE" and listener is not None and listener.is_activated():
                 state = "ACTIVE"
                 activated_at = time.time()
@@ -391,26 +540,25 @@ def main():
                 greeter.reset_last()
                 liveness.reset()
                 blink_confirmed.clear()
-                if transcript:
-                    transcript.user(config.WAKE_WORD)
+                seen_in_session.clear()
+                session_id = uuid.uuid4().hex[:12]
+                chat.budget.reset()
+                panel.session_reset()
+                panel.reload_projects()
+                tts.flush()
                 greeter.say("Hello. I am ready.")
-                print("[state] IDLE -> ACTIVE")
+                print(f"[state] IDLE -> ACTIVE (session {session_id})")
 
+            # ---- recognition (only in ACTIVE) -----------------------
+            biggest_quality_unknown = False
+            labels: dict[int, str] = {}
             dets = pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
                                config.DETECTOR_NMS_IOU)
             biggest = largest_detection(dets)
-            labels: dict[int, str] = {}
-
-            biggest_quality_unknown = False
-            biggest_is_live = False
 
             if state == "ACTIVE":
-                # Temporal liveness only tracked on the largest face.
                 biggest_is_live = liveness.update(frame, biggest)
-
-                # Faces we want to greet this frame; collected first, then
-                # the blink challenge runs once on the largest of them.
-                pending_greets: list[tuple[int, str, str, np.ndarray, float]] = []
+                pending_greets: list[tuple[str, str, np.ndarray, float]] = []
 
                 for i, det in enumerate(dets):
                     ok, reason = is_quality_face(det, frame.shape)
@@ -419,11 +567,9 @@ def main():
                         continue
                     if det is biggest:
                         if not biggest_is_live:
-                            labels[i] = f"checking liveness... ({liveness.last_reason})"
+                            labels[i] = f"checking liveness..."
                             continue
                     else:
-                        # Secondary faces only get the cheap screen-attack
-                        # gates (specular + texture). No temporal window.
                         sf_ok, sf_reason = LivenessChecker.single_frame_check(frame, det)
                         if not sf_ok:
                             labels[i] = f"liveness: {sf_reason}"
@@ -434,135 +580,186 @@ def main():
                     idx, score = cosine_match(emb, matrix)
                     if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
                         labels[i] = f"{names[idx]} ({score:.2f})"
-                        # Silent learning on confident, live, recognised faces.
                         if learner.maybe_add(emp_ids[idx], names[idx], emb, score):
                             emp_ids, names, matrix = db.load_all()
                         pending_greets.append(
-                            (i, emp_ids[idx], names[idx], emb, score)
+                            (emp_ids[idx], names[idx], emb, score)
                         )
                     else:
                         labels[i] = f"unknown ({score:.2f})"
                         if det is biggest:
                             biggest_quality_unknown = True
 
-                # ---- blink challenge gate -------------------------------
-                # If any pending greet's emp_id hasn't been blink-confirmed
-                # this session, run the challenge once. While the challenge
-                # is running, the loop yields control to it.
+                # Blink challenge on any unconfirmed emp_id we want to greet.
                 need_blink = [
-                    g for g in pending_greets if g[1] not in blink_confirmed
+                    g for g in pending_greets if g[0] not in blink_confirmed
                 ]
                 if config.LIVENESS_REQUIRE_BLINK and need_blink:
-                    if blinker.run(cam, greeter, show_preview):
-                        for _, eid, _, _, _ in need_blink:
+                    if blinker.run(cam, greeter, show_preview=False):
+                        for eid, _, _, _ in need_blink:
                             blink_confirmed.add(eid)
                         last_interaction_at = time.time()
                     else:
                         greeter.say("Blink not detected. Please try again.")
-                        # Don't greet the unconfirmed ones this round.
                         pending_greets = [
-                            g for g in pending_greets if g[1] in blink_confirmed
+                            g for g in pending_greets if g[0] in blink_confirmed
                         ]
 
-                for _, emp_id, name, _, score in pending_greets:
+                for emp_id, name, _, _ in pending_greets:
                     if greeter.greet(emp_id, name):
                         last_interaction_at = time.time()
-                        if transcript:
-                            transcript.event(f"Recognised {name}")
+                        # Counter increments at most once per (emp_id, session)
+                        if emp_id not in seen_in_session:
+                            seen_in_session.add(emp_id)
+                            db.record_interaction(emp_id, session_id)
+                        last_known_emp_id = emp_id
+                        panel.set_chat_emp_id(emp_id)
 
+                # Auto-jump to REGISTER tab when an unknown stick around.
                 if biggest_quality_unknown:
-                    # Someone unfamiliar is in frame -- keep awake while we
-                    # build up to the registration trigger.
                     last_interaction_at = time.time()
                     unknown_streak += 1
-                    if transcript and unknown_streak == 1:
-                        transcript.event("New face — getting ready to register")
+                    if (args.auto_register
+                            and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
+                            and panel.tab != "REGISTER"):
+                        unknown_streak = 0
+                        panel.set_tab("REGISTER")
+                        panel.register_message = (
+                            "New face detected. Type your details below "
+                            "and press Enter."
+                        )
+                        greeter.say(
+                            "I do not recognise you. Please register on the screen."
+                        )
                 else:
                     unknown_streak = 0
 
-                if (
-                    args.auto_register
-                    and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
-                ):
-                    unknown_streak = 0
-                    if prompt_registration(db, greeter, cam, pipe, show_preview):
-                        emp_ids, names, matrix = db.load_all()
-                    last_interaction_at = time.time()
-
-                # ---- ACTIVE -> IDLE timeouts ---------------------------
-                # IDLE_AFTER_LAST_INTERACTION_SEC after the last *new* event
-                # -- a recognised person who just stands there does NOT keep
-                # the system awake.
+                # Idle timeout.
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
-                if (
-                    idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
-                    or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)
-                ):
+                if (idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
+                        or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)):
                     if listener is not None:
                         state = "IDLE"
                         liveness.reset()
                         greeter.reset_last()
                         listener.deactivate()
-                        if transcript:
-                            transcript.event("Going to sleep — say 'hello echo' to wake me")
-                        print(f"[state] ACTIVE -> IDLE (idle for {idle_for:.0f}s)")
+                        print(f"[state] ACTIVE -> IDLE (idle {idle_for:.0f}s, "
+                              f"interactions={len(seen_in_session)})")
 
-            # ---- HUD ---------------------------------------------------
+                # Chat result polling.
+                if panel.chat_pending_future is not None and panel.chat_pending_future.done():
+                    fut = panel.chat_pending_future
+                    panel.chat_pending_future = None
+                    try:
+                        answer = fut.result()
+                        panel.chat_history.append(("assistant", answer))
+                        greeter.say(answer)
+                        last_interaction_at = time.time()
+                    except ChatBudgetError as exc:
+                        panel.chat_history.append(("assistant", str(exc)))
+                    except ChatBackendError as exc:
+                        panel.chat_history.append(("assistant",
+                                                   f"Sorry — {exc}"))
+                    except Exception as exc:  # noqa: BLE001
+                        panel.chat_history.append(("assistant",
+                                                   f"Chat error: {exc}"))
+
+            # ---- render -----------------------------------------------
             if show_preview:
                 if state == "IDLE":
-                    # Just show detections, but don't recognise.
-                    for i, _ in enumerate(dets):
-                        labels[i] = "(idle)"
-                    banner = banner_idle
-                    status = None
+                    composed = views.render_idle(
+                        weather.get(),
+                        db.interaction_count_total(),
+                        config.WINDOW_SIZE,
+                    )
                 else:
-                    banner = None
-                    if biggest is not None and not biggest_is_live:
-                        status = (
-                            f"liveness: {liveness.last_reason}  "
-                            f"motion={liveness.last_relative_motion:.2f}/"
-                            f"{config.LIVENESS_REL_MOTION_MIN:.2f}  "
-                            f"jitter={liveness.last_pixel_jitter:.1f}/"
-                            f"{config.LIVENESS_PIXEL_JITTER_MIN:.1f}  "
-                            f"glare={liveness.last_specular_ratio:.0%}/"
-                            f"{config.LIVENESS_MAX_SPECULAR_RATIO:.0%}  "
-                            f"tex={liveness.last_texture_var:.0f}/"
-                            f"{config.LIVENESS_MIN_TEXTURE_VAR:.0f}"
-                        )
-                    elif biggest_quality_unknown:
-                        status = (f"unknown streak {unknown_streak}/"
-                                  f"{config.UNKNOWN_FRAMES_BEFORE_REGISTER}")
-                    else:
-                        status = None
+                    cam_w = config.WINDOW_SIZE[0] - config.PANEL_WIDTH
+                    cam_h = config.WINDOW_SIZE[1]
+                    cam_pane = resize_to_camera_pane(frame, cam_w, cam_h)
+                    # Rescale detection coords from source frame to pane.
+                    pane_dets = _rescale_dets(dets, frame.shape, cam_pane.shape)
+                    draw_face_overlays(
+                        cam_pane, pane_dets,
+                        lambda d: labels.get(pane_dets.index(d), ""),
+                    )
+                    panel_img = panel.render(len(seen_in_session))
+                    composed = views.render_active(cam_pane, panel_img)
 
-                draw_hud(frame, dets, lambda d: labels.get(dets.index(d), ""),
-                         banner=banner, status=status)
-                if transcript is not None:
-                    panel = transcript.render(frame.shape[0], config.TRANSCRIPT_PANEL_WIDTH)
-                    composed = compose_with_camera(frame, panel)
-                else:
-                    composed = frame
                 if config.DISPLAY_SCALE != 1.0:
                     new_w = max(1, int(composed.shape[1] * config.DISPLAY_SCALE))
                     new_h = max(1, int(composed.shape[0] * config.DISPLAY_SCALE))
                     composed = cv2.resize(composed, (new_w, new_h),
                                           interpolation=cv2.INTER_AREA)
-                cv2.imshow("Face Recognition", composed)
-                key = cv2.waitKey(1) & 0xFF
+                cv2.imshow("Echo AI", composed)
+                raw = cv2.waitKey(1)
+                key = raw & 0xFF if raw != -1 else 0xFF
                 if key == ord("q"):
                     break
-                if key == ord("r") and state == "ACTIVE":
-                    if prompt_registration(db, greeter, cam, pipe, show_preview):
+                if state == "ACTIVE" and key != 0xFF:
+                    actions = panel.handle_key(key)
+                    if actions.get("submit_register"):
+                        run_in_panel_registration(
+                            panel, db, greeter, tts, cam, pipe,
+                        )
                         emp_ids, names, matrix = db.load_all()
-                    last_interaction_at = time.time()
+                        last_interaction_at = time.time()
+                    if (q := actions.get("submit_chat")):
+                        _submit_chat(panel, chat, last_known_emp_id, q)
+                        last_interaction_at = time.time()
+            else:
+                # Headless: just keep the loop running.
+                time.sleep(0.02)
     finally:
         if listener is not None:
             listener.stop()
+        weather.stop()
+        chat.shutdown()
+        tts.stop()
         cam.stop()
         pipe.close()
         db.close()
         if show_preview:
             cv2.destroyAllWindows()
+
+
+def _submit_chat(panel: RightPanel, chat: ChatClient, emp_id: str,
+                 question: str) -> None:
+    panel.chat_history.append(("user", question))
+    if chat.budget.remaining(emp_id) <= 0:
+        panel.chat_history.append(("assistant",
+                                   "Question budget reached for this session."))
+        return
+    panel.chat_pending_future = chat.submit(emp_id, question)
+    panel.chat_pending_started_at = time.time()
+
+
+def _rescale_dets(dets, src_shape, dst_shape):
+    """Scale detection bboxes / landmarks from the source frame coords to
+    the resized camera pane so overlays line up."""
+    if not dets:
+        return dets
+    src_h, src_w = src_shape[:2]
+    dst_h, dst_w = dst_shape[:2]
+    scale = min(dst_w / src_w, dst_h / src_h)
+    new_w = src_w * scale
+    new_h = src_h * scale
+    x_off = (dst_w - new_w) / 2
+    y_off = (dst_h - new_h) / 2
+
+    out = []
+    for d in dets:
+        # Mutate-shallow-copy via a SimpleNamespace-like wrapper isn't
+        # worth the complexity — reuse the dataclass.
+        from copy import copy
+        d2 = copy(d)
+        x1, y1, x2, y2 = d.bbox
+        d2.bbox = (
+            x1 * scale + x_off, y1 * scale + y_off,
+            x2 * scale + x_off, y2 * scale + y_off,
+        )
+        d2.landmarks = d.landmarks * scale + np.array([x_off, y_off])
+        out.append(d2)
+    return out
 
 
 if __name__ == "__main__":

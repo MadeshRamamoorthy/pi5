@@ -1,16 +1,23 @@
-# Pi 5 + Hailo-10H Face Recognition
+# Echo AI Kiosk — Pi 5 + Hailo-10H
 
-Live face recognition on a Raspberry Pi 5 (8 GB) using the **Pi AI Camera**
-(IMX500) as the image source and a **Hailo-10H M.2** accelerator running
-detection (SCRFD) + embedding (ArcFace MobileFaceNet). Recognised employees
-are greeted by name through TTS; unknown faces — once the system is sure
-they're a real face, not a hand or partial detection — trigger a
-voice-guided registration that captures the person from five poses and
-stores them in a local SQLite database.
+A face-recognising kiosk for the Pi 5 (8 GB) using the **Pi AI Camera**
+(IMX500) and a **Hailo-10H M.2** accelerator. The screen shows a blue
+"Welcome to Echo AI" banner with live weather (top-right) and a lifetime
+interaction counter (bottom-right) until it hears the wake phrase
+**"hello echo"** — then it splits into camera (left) + tabbed terminal
+(right) for projects / on-screen registration / OpenAI-or-Ollama chat.
 
-The system idles until it hears the wake phrase **"hello echo"**, then runs
-a passive liveness check before recognising or greeting anyone — so a
-printed photo or a phone screen with a still image won't open the door.
+Each distinct face recognised before the session goes idle counts as one
+interaction (persisted in SQLite, surfaced on the welcome screen and the
+admin web UI). TTS runs in a worker thread so playback never freezes the
+camera. New visitors register themselves on the right panel — no host
+stdin required.
+
+The system idles until it hears the wake phrase, then runs a layered
+liveness stack (specular highlights + texture variance + temporal
+micro-motion + active blink challenge) before recognising or greeting
+anyone — so a printed photo, a phone screen with a still image, or a
+held-up monitor won't trigger a greeting.
 
 This repo was developed and tested on a Pi 5 running Raspberry Pi OS
 (Trixie / Python 3.13), HailoRT 5.3.0, and the H10 PCIe driver 5.x. Working
@@ -20,15 +27,24 @@ your username/path.
 ## How it works
 
 ```
-                      ┌─────────────────────────────────────┐
-                      │  Vosk wake-word listener (mic)      │
-                      │  hears "hello echo" → wake() event  │
-                      └──────────────────┬──────────────────┘
-                                         ▼
-                       state machine:  IDLE ─wake─▶ ACTIVE
-                                          ▲           │
-                                          └─ no live ─┘
-                                             face for 30s
+   IDLE  (welcome screen)                  ACTIVE  (camera + right panel)
+  ┌────────────────────────────┐         ┌──────────────┬──────────────┐
+  │                            │         │              │ [P]rojects   │
+  │       Welcome to           │         │  camera with │ [R]egister   │
+  │        Echo AI             │ ──────▶ │  detections  │ [C]hat       │
+  │                            │  hello  │              │              │
+  │     21°C  partly cloudy    │  echo   │              │ list / form  │
+  │                            │         │              │ / chat lines │
+  │                  42        │         │              │              │
+  │            interactions    │         │              │              │
+  └────────────────────────────┘         └──────────────┴──────────────┘
+                ▲                                       │
+                └────────── 30s no new event ───────────┘
+```
+
+The recognition pipeline that runs in ACTIVE state:
+
+```
  Pi AI Camera (IMX500)
         │  picamera2  RGB888 (libcamera quirk: bytes are BGR-ordered)
         ▼
@@ -54,20 +70,32 @@ your username/path.
               match                       below threshold
                   │                       │
                   ▼                       ▼
-       greet ONCE per person     after N consecutive
-       (silent on repeat)        good-quality unknowns
-                                 → voice-guided enrolment
+       greet (async TTS,         after N consecutive
+       no camera lag),           good-quality unknowns
+       counter +=1               → REGISTER tab opens,
+                                 user types emp_id + name on screen
 ```
 
-The DB has two tables. `emp_id` is the primary key.
+TTS playback runs on a worker thread (`async_tts.py`) so the camera
+never freezes during a greeting. Greetings, pose prompts, and chat
+replies all queue and play serially.
+
+The DB has four tables; `emp_id` is the primary key for employees,
+`session_id` (a UUID assigned at each wake-word transition) keys
+counter rows.
 
 ```sql
 employees(emp_id PRIMARY KEY, name, created_at)
 face_embeddings(id PK, emp_id FK, embedding BLOB, created_at)
+projects(id PK, title, description, ordering, created_at)
+interactions(id PK, emp_id, session_id, ts, UNIQUE(emp_id, session_id))
 ```
 
-Multiple embeddings per person are stored — one per pose — and `emp_id` is
-deleted-cascade so removing an employee also drops their face data.
+Multiple embeddings per person are stored — one per pose — and `emp_id`
+is deleted-cascade so removing an employee also drops their face data.
+Counter rows are deduplicated at the DB level: each `(emp_id,
+session_id)` can only insert once, so re-entries inside one ACTIVE
+session don't double-count.
 
 ## Project layout
 
@@ -80,9 +108,12 @@ deleted-cascade so removing an employee also drops their face data.
 | `liveness.py`     | Passive liveness check (relative landmark motion + pixel jitter) |
 | `blink.py`        | Active liveness: blink challenge gating per-session |
 | `tts.py`          | TTS backend abstraction (Piper / pyttsx3) with WAV prebuffer |
+| `async_tts.py`    | Worker-thread queue around the TTS backend so greetings never freeze the camera |
 | `wake_word.py`    | Vosk-based "hello echo" listener (background thread, mic) |
-| `transcript.py`   | Side-panel event log: mic, TTS, recognition, state |
-| `main.py`         | Live loop + IDLE/ACTIVE state machine, multi-face greet |
+| `weather.py`      | IP-geolocated Open-Meteo poller for the idle widget |
+| `chat.py`         | OpenAI → Ollama fallback, per-session 5-question budget |
+| `views.py`        | Render functions for the welcome screen and tabbed right panel |
+| `main.py`         | Live loop, IDLE/ACTIVE state machine, multi-face greet, tab handlers, registration / chat dispatch |
 | `enroll.py`       | Pre-enrol an employee from N camera frames (no live loop) |
 | `admin.py`        | CLI: list / show / delete / export DB entries |
 | `admin_web.py`    | Flask web UI for the same operations (`./start_admin.sh`) |
@@ -432,6 +463,32 @@ To force the espeak voice anyway, set `TTS_BACKEND = "pyttsx3"` in
 
 ## 3. Using it
 
+### 3.0 Welcome screen, tabs, and counter
+
+**IDLE** is a full-screen blue panel with "Welcome to Echo AI" centred,
+weather top-right, and the persistent interaction counter bottom-right.
+The camera keeps running in the background — but it's **not shown** in
+this state. Detection / silent learning don't run in IDLE either, so
+CPU is mostly the wake-word listener.
+
+Saying **"hello echo"** transitions to **ACTIVE**: the cv2 window
+splits into camera (left) and a tabbed right panel (right). Three tabs:
+
+| Tab        | Key | Purpose                                                            |
+|------------|-----|--------------------------------------------------------------------|
+| `PROJECTS` | `P` | Read-only list pulled from `projects` table; refreshes every 5 s.  |
+| `REGISTER` | `R` | In-window text fields. Tab to switch field, Enter to submit, then voice-guided pose capture runs. Auto-opens after a quality unknown face streak. |
+| `CHAT`     | `C` | Up to 5 questions per session via OpenAI / Ollama (see §3.6). `V` toggles voice / keyboard input. |
+
+The header strip across each tab also shows
+`this session: N` — the number of distinct people greeted since the
+last wake-up.
+
+After `IDLE_AFTER_LAST_INTERACTION_SEC` (default **30 s**) without a
+new event the kiosk drops back to IDLE. New events are: a different
+emp_id greeted, an unknown high-quality face in frame, a chat
+exchange, or a registration.
+
 ### 3.1 Live recogniser with auto-registration
 
 The fastest way to launch with mic + speaker pinned to the Anker is the
@@ -594,6 +651,69 @@ sqlite> SELECT emp_id, name FROM employees;
 ```
 
 `sqlitebrowser` provides a GUI if you'd rather click around.
+
+### 3.6 Chat (OpenAI → Ollama fallback)
+
+Chat is opened from the right panel by pressing **`C`**. The header
+shows which backend is live:
+
+- `OpenAI · gpt-4o-mini` when `OPENAI_API_KEY` is set and
+  `api.openai.com` is reachable.
+- `Ollama (local) · llama3.2:1b` when local Ollama is running on
+  `localhost:11434` and the model is pulled
+  (see https://www.raspberrypi.com/documentation/computers/ai.html).
+- `Chat unavailable — no backend reachable` when neither works.
+
+Each emp_id gets `CHAT_MAX_QUESTIONS_PER_SESSION` questions (default
+**5**) per ACTIVE session; the budget resets on the next wake. The
+**6th** question is rejected with `Question budget reached for this
+session.`
+
+Setup OpenAI:
+
+```bash
+echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
+exec bash
+./start.sh
+```
+
+Setup local Ollama (matches the Pi 5 docs above):
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl enable --now ollama
+ollama pull llama3.2:1b           # ~1.3 GB; fits Pi 5 8 GB easily
+```
+
+Switch backend preference order in `config.py`:
+
+```python
+CHAT_BACKEND_ORDER = ("ollama", "openai")   # local-first
+```
+
+Toggle voice / keyboard input with **`V`** while the chat tab is open;
+voice mode listens via the same Vosk model used for the wake word
+(no grammar) and submits when you stop speaking. Replies are spoken
+through the configured TTS backend and shown in the panel.
+
+### 3.7 Projects board
+
+Projects live in the `projects` table (`id, title, description,
+ordering, created_at`). The `PROJECTS` tab in ACTIVE state renders a
+scrolling list, refreshed every 5 seconds. Edit them through the admin
+UI (§3.3 *Web UI*) — the kiosk picks up changes without a restart.
+
+### 3.8 Counter / metrics
+
+Every distinct face recognised in an ACTIVE session inserts one row
+into the `interactions` table (`UNIQUE(emp_id, session_id)` — so the
+same person re-recognised in the same session doesn't double-count).
+Total is shown bottom-right of the welcome screen and at
+`http://<pi>:8081/api/metrics`. To reset:
+
+```bash
+sqlite3 /home/echo/Documents/code/pi5/faces.db "DELETE FROM interactions;"
+```
 
 ### 3.4 Re-registration
 
@@ -788,6 +908,9 @@ service only do recognition + greeting.
 | Always says "unknown" | Threshold too tight, or too few enrolment samples. Lower `COSINE_MATCH_THRESHOLD` or re-enrol with more poses. |
 | Registration triggers when I bring my hand near my face | The quality gate should be filtering this; if not, raise `QUALITY_SCORE_THRESHOLD` or `QUALITY_MIN_EYE_DISTANCE`. |
 | Greeting doesn't speak | No audio sink. `aplay -l` to check, then `raspi-config` → System → Audio. |
+| Camera freezes for ~1 s during a greeting | Resolved in current code: TTS now runs on a worker thread (`async_tts.py`). If you're still seeing freezes, you may have an old checkout — `git pull`. |
+| Idle screen says `weather: offline` | No internet at startup so the IP-geolocation lookup failed. Either bring the Pi online and restart, or set `WEATHER_LATITUDE` / `WEATHER_LONGITUDE` in `config.py` to skip the IP lookup. |
+| Chat tab says `Chat unavailable — no backend reachable` | `OPENAI_API_KEY` is unset (or no internet) AND local Ollama isn't running. Either `export OPENAI_API_KEY=...` and restart, or `sudo systemctl start ollama && ollama pull llama3.2:1b`. |
 | `QFontDatabase: Cannot find font directory ... cv2/qt/fonts` | Harmless — opencv-python's bundled Qt has no fonts. `main.py` already sets `QT_LOGGING_RULES` to silence it. To fix properly: `sudo apt install -y fonts-dejavu-core && cp /usr/share/fonts/truetype/dejavu/*.ttf .venv/lib/python3.13/site-packages/cv2/qt/fonts/`. |
 | `qt.qpa.xcb: could not connect to display` / `Aborted` | You're running as root (or otherwise have no `DISPLAY`). Best fix: run as your normal user — `exit` the root shell and `./start.sh` again. If you must run as root, `start.sh` now auto-falls-back to `--no-display`; or set `export DISPLAY=:0; export XAUTHORITY=/home/echo/.Xauthority` first. To get full graphical preview as your user, also make sure you're in `video,audio,render` groups: `sudo usermod -aG video,audio,render echo`, then log out and back in. |
 | Wake word never triggers | `arecord -l` to confirm a mic exists; `python -c "import sounddevice as sd; print(sd.query_devices())"` to see what `sounddevice` sees. Set the mic as the default ALSA capture device or export `SD_DEVICE=<index>`. |

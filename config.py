@@ -136,11 +136,42 @@ WAKE_WORD_BLOCKSIZE = 8000
 # greeted, an unknown face in frame, or a registration completing). A
 # recognised person who keeps standing in front of the camera does NOT
 # reset this timer -- 10 s after the last new event we sleep.
-IDLE_AFTER_LAST_INTERACTION_SEC = 10
+IDLE_AFTER_LAST_INTERACTION_SEC = 30
 # Backwards-compat alias used by older code paths.
 SLEEP_AFTER_NO_LIVE_FACE_SEC = IDLE_AFTER_LAST_INTERACTION_SEC
 # Hard back-stop on any single ACTIVE session.
 ACTIVE_SESSION_MAX_SEC = 600
+
+# ---- Idle / Active screen layout -----------------------------------------
+# Welcome banner colours, BGR triplets.
+THEME = {
+    "bg":     (180, 110, 30),   # blue background
+    "fg":     (0, 0, 0),         # black text
+    "accent": (0, 0, 0),
+}
+# Window size for the cv2 output. The camera frame is centred / scaled
+# into the left half during ACTIVE; the right half is the panel. Pick a
+# size that fits your display.
+WINDOW_SIZE = (1280, 720)        # (width, height)
+
+# Right-panel width in ACTIVE state. Camera left half = WINDOW_SIZE[0] - PANEL_WIDTH.
+PANEL_WIDTH = 540
+
+# ---- Weather widget -------------------------------------------------------
+WEATHER_REFRESH_SEC = 1800        # 30 minutes
+WEATHER_LATITUDE = None           # set both to skip IP geolocation
+WEATHER_LONGITUDE = None
+WEATHER_FALLBACK_CITY = None      # used as label when lat/lon are pinned
+
+# ---- OpenAI / Ollama chat -------------------------------------------------
+OPENAI_MODEL = "gpt-4o-mini"
+OLLAMA_URL = "http://localhost:11434"
+OLLAMA_MODEL = "llama3.2:1b"      # small enough for Pi 5 RAM (1.3 GB)
+# Backend probe order. First available wins. Set to ("ollama", "openai")
+# if you want to prefer the local model.
+CHAT_BACKEND_ORDER = ("openai", "ollama")
+CHAT_MAX_QUESTIONS_PER_SESSION = 5
+CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 
 # ---- Silent learning ------------------------------------------------------
 # When a confidently recognised face passes the quality + liveness gates,
