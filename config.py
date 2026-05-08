@@ -166,7 +166,10 @@ WEATHER_FALLBACK_CITY = None      # used as label when lat/lon are pinned
 # ---- OpenAI / Ollama chat -------------------------------------------------
 OPENAI_MODEL = "gpt-4o-mini"
 OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "llama3.2:1b"      # small enough for Pi 5 RAM (1.3 GB)
+OLLAMA_MODEL = "qwen3:1.7b"       # qwen3 instruct on Hailo-Ollama; bigger
+                                  # alternatives that fit on Pi 5: "qwen2.5:1.5b"
+                                  # avoid "deepseek_r1:*" (emits <think> blocks)
+                                  # and "qwen2.5-coder:*" (code-tuned, weak chat)
 # Backend probe order. First available wins. Set to ("ollama", "openai")
 # if you want to prefer the local model.
 CHAT_BACKEND_ORDER = ("openai", "ollama")

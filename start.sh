@@ -80,6 +80,55 @@ export SD_DEVICE
 export AUDIO_OUTPUT_DEVICE
 export OPENAI_API_KEY
 
+# ---- Hailo-Ollama (local chat backend) -----------------------------------
+# Probe http://localhost:11434/api/tags. If the daemon isn't up, try the
+# usual service names, then fall back to launching the binary directly.
+# Failure here is non-fatal: chat falls back to OpenAI if OPENAI_API_KEY
+# is set, otherwise the CHAT tab will display "Chat unavailable".
+: "${OLLAMA_URL:=http://localhost:11434}"
+ollama_up() { curl -sf -m 1 "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; }
+
+if ollama_up; then
+    echo "   hailo-ollama : up at ${OLLAMA_URL}"
+else
+    echo "   hailo-ollama : not running, attempting to start..."
+    started=0
+    # 1. systemd (try a couple of common unit names; -n = no password prompt).
+    for svc in hailo-ollama ollama; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
+            if sudo -n systemctl start "$svc" 2>/dev/null \
+               || systemctl --user start "$svc" 2>/dev/null; then
+                started=1
+                break
+            fi
+        fi
+    done
+    # 2. Direct binary fallback.
+    if [[ $started -eq 0 ]]; then
+        for bin in hailo-ollama ollama; do
+            if command -v "$bin" >/dev/null 2>&1; then
+                nohup "$bin" serve >"/tmp/${bin}.log" 2>&1 &
+                started=1
+                break
+            fi
+        done
+    fi
+    # 3. Wait up to ~10 s for the API to answer.
+    if [[ $started -eq 1 ]]; then
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            ollama_up && break
+            sleep 1
+        done
+    fi
+    if ollama_up; then
+        echo "   hailo-ollama : up at ${OLLAMA_URL}"
+    else
+        echo "   hailo-ollama : NOT reachable -- chat will use OpenAI only" >&2
+        echo "                  (start manually: 'hailo-ollama serve' or" >&2
+        echo "                   'sudo systemctl start hailo-ollama')" >&2
+    fi
+fi
+
 # Probe X display reliably *after* venv activation -- uses libX11 via
 # ctypes so we don't depend on x11-utils being installed.
 x_probe="$(python - <<'PY' 2>/dev/null
