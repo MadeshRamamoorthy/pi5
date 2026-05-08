@@ -67,21 +67,7 @@ if [[ $EUID -eq 0 ]]; then
     fi
 fi
 
-x_ok=true
-if ! command -v xset >/dev/null 2>&1; then
-    # No xset; we can't probe. Trust DISPLAY being set.
-    [[ -z "${DISPLAY:-}" ]] && x_ok=false
-elif ! xset q >/dev/null 2>&1; then
-    x_ok=false
-fi
-
-if ! $x_ok; then
-    echo "Note: no usable X display; adding --no-display." >&2
-    case " $EXTRA_ARGS $* " in
-        *" --no-display "*) ;;
-        *) EXTRA_ARGS="$EXTRA_ARGS --no-display" ;;
-    esac
-fi
+# (X probe runs after venv activation -- needs python from venv.)
 
 # ---- Activate venv & launch ---------------------------------------------
 # shellcheck source=/dev/null
@@ -89,6 +75,52 @@ source .venv/bin/activate
 
 export SD_DEVICE
 export AUDIO_OUTPUT_DEVICE
+
+# Probe X display reliably *after* venv activation -- uses libX11 via
+# ctypes so we don't depend on x11-utils being installed.
+x_probe="$(python - <<'PY' 2>/dev/null
+import os, ctypes, sys
+disp = os.environ.get("DISPLAY", "")
+if not disp:
+    print("none"); sys.exit(0)
+try:
+    libx = ctypes.CDLL("libX11.so.6")
+    libx.XOpenDisplay.restype = ctypes.c_void_p
+    libx.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    d = libx.XOpenDisplay(disp.encode())
+    if d:
+        libx.XCloseDisplay(d)
+        print("ok")
+    else:
+        print("unreachable")
+except Exception:
+    # libX11 not present -- almost certainly no X.
+    print("none")
+PY
+)"
+
+case "$x_probe" in
+    ok)
+        ;;
+    none)
+        echo "Note: no X display ('$DISPLAY'); running headless." >&2
+        case " $EXTRA_ARGS $* " in
+            *" --no-display "*) ;;
+            *) EXTRA_ARGS="$EXTRA_ARGS --no-display" ;;
+        esac
+        ;;
+    unreachable)
+        echo "Note: DISPLAY='$DISPLAY' set but unreachable (auth or no server)." >&2
+        echo "      Falling back to headless. To get the GUI:" >&2
+        echo "        - run as the user that owns the desktop session," >&2
+        echo "        - or switch the session to X11 (sudo raspi-config" >&2
+        echo "          -> Advanced -> Wayland -> X11) and reboot." >&2
+        case " $EXTRA_ARGS $* " in
+            *" --no-display "*) ;;
+            *) EXTRA_ARGS="$EXTRA_ARGS --no-display" ;;
+        esac
+        ;;
+esac
 
 echo "---------------------------------------------------------------"
 echo " pi5 face-recognition"
