@@ -5,8 +5,15 @@ ROOT = Path(__file__).resolve().parent
 MODELS_DIR = ROOT / "models"
 DB_PATH = ROOT / "faces.db"
 
-# Vosk wake-word model directory (download via README §2.8).
-VOSK_MODEL_DIR = MODELS_DIR / "vosk-model-small-en-us-0.15"
+# Vosk model directory. We use the same model for the wake word AND the
+# CHAT tab's free-form dictation, so the larger 0.22 model gives much
+# better chat transcription. Falls back to the small model if the large
+# one isn't downloaded yet.
+VOSK_MODEL_DIR = MODELS_DIR / "vosk-model-en-us-0.22"
+if not VOSK_MODEL_DIR.is_dir():
+    _fallback = MODELS_DIR / "vosk-model-small-en-us-0.15"
+    if _fallback.is_dir():
+        VOSK_MODEL_DIR = _fallback
 
 # Hailo-10H compiled models (HEF). Download via the install guide.
 DETECTOR_HEF = MODELS_DIR / "scrfd_10g.hef"

@@ -290,9 +290,21 @@ class RightPanel:
             self.set_tab(tabs[idx])
             out["activity"] = True
             return out
-        # CHAT tab: clicking the input box toggles voice listening.
+        # CHAT tab: clicks in the bottom input row.
+        # Mic / keyboard toggle button on the right ~60px.
+        # The rest of the input box toggles voice listening (in voice mode).
         if self.tab == "CHAT" and y > config.WINDOW_SIZE[1] - 70:
             out["activity"] = True
+            btn_left = config.PANEL_WIDTH - 12 - 60
+            if x >= btn_left:
+                # Toggle input mode and stop any in-flight listening.
+                self.chat_input_mode = (
+                    "keyboard" if self.chat_input_mode == "voice" else "voice"
+                )
+                self.chat_partial = ""
+                if self.chat_listening:
+                    out["stop_listening"] = True
+                return out
             if self.chat_input_mode == "voice":
                 if self.chat_listening:
                     out["stop_listening"] = True

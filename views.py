@@ -297,17 +297,68 @@ def render_chat_panel(history: list, remaining: int, input_mode: str,
         if y > size[1] - 70:
             break
 
-    # Bottom: input field / partial speech.
+    # Bottom: input field + a mic / keyboard toggle button on the right.
+    # Clicking the button switches input mode without needing the V key.
+    btn_w = 60
     box_top = size[1] - 60
     box_bot = size[1] - 18
-    cv2.rectangle(canvas, (12, box_top), (size[0] - 12, box_bot),
+    box_right = size[0] - 12
+    btn_left = box_right - btn_w
+    box_left = 12
+
+    cv2.rectangle(canvas, (box_left, box_top), (btn_left - 4, box_bot),
                   (80, 80, 80), 1)
     placeholder = ("type and press Enter..." if input_mode == "keyboard"
-                   else "speak your question...")
+                   else "tap the mic to speak")
     text = partial_text or placeholder
     text_col = (240, 240, 240) if partial_text else (110, 110, 110)
     if input_mode == "keyboard" and partial_text:
         text = partial_text + "|"
     cv2.putText(canvas, text[:chars], (22, box_bot - 14),
                 FONT, 0.5, text_col, 1, cv2.LINE_AA)
+
+    # Toggle button.
+    bg = (60, 90, 60) if input_mode == "voice" else (60, 60, 90)
+    cv2.rectangle(canvas, (btn_left, box_top), (box_right, box_bot),
+                  bg, -1)
+    cv2.rectangle(canvas, (btn_left, box_top), (box_right, box_bot),
+                  (160, 160, 160), 1)
+    cx = (btn_left + box_right) // 2
+    cy = (box_top + box_bot) // 2
+    if input_mode == "voice":
+        _draw_mic_icon(canvas, cx, cy, (240, 240, 240))
+    else:
+        _draw_keyboard_icon(canvas, cx, cy, (240, 240, 240))
     return canvas
+
+
+def _draw_mic_icon(canvas, cx: int, cy: int, colour: tuple) -> None:
+    # Capsule (mic head) + base + stand line.
+    head_w, head_h = 8, 14
+    cv2.rectangle(canvas, (cx - head_w, cy - head_h - 2),
+                  (cx + head_w, cy - 2), colour, -1, lineType=cv2.LINE_AA)
+    # Round the top.
+    cv2.circle(canvas, (cx, cy - head_h - 2), head_w, colour, -1, cv2.LINE_AA)
+    # Round the bottom.
+    cv2.circle(canvas, (cx, cy - 2), head_w, colour, -1, cv2.LINE_AA)
+    # Curved base + stand line.
+    cv2.ellipse(canvas, (cx, cy + 4), (12, 6), 0, 0, 180,
+                colour, 2, cv2.LINE_AA)
+    cv2.line(canvas, (cx, cy + 10), (cx, cy + 14), colour, 2, cv2.LINE_AA)
+    cv2.line(canvas, (cx - 7, cy + 14), (cx + 7, cy + 14),
+             colour, 2, cv2.LINE_AA)
+
+
+def _draw_keyboard_icon(canvas, cx: int, cy: int, colour: tuple) -> None:
+    w, h = 22, 12
+    cv2.rectangle(canvas, (cx - w, cy - h), (cx + w, cy + h),
+                  colour, 1, cv2.LINE_AA)
+    # Three rows of dots = keys.
+    for r, yy in enumerate((cy - h + 4, cy, cy + h - 4)):
+        # Last row a single wider key (space bar) for visual variety.
+        if r == 2:
+            cv2.line(canvas, (cx - 12, yy), (cx + 12, yy),
+                     colour, 2, cv2.LINE_AA)
+            continue
+        for x in range(cx - w + 4, cx + w - 2, 6):
+            cv2.line(canvas, (x, yy), (x + 2, yy), colour, 2, cv2.LINE_AA)
