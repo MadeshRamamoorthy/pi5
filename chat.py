@@ -13,6 +13,9 @@ Calls run on a dedicated worker thread so the camera loop never blocks.
 The caller submits a question via `submit(emp_id, question)` which
 returns a `concurrent.futures.Future`; poll it from the main loop and
 read `result()` once done.
+
+`available()` results are cached for AVAILABILITY_TTL_SEC so the camera
+loop's per-frame `status()` calls don't hammer the network.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import socket
+import time
 from typing import Iterable
 
 import requests
@@ -33,6 +37,8 @@ SYSTEM_PROMPT = (
     "If the user asks about projects on display, suggest they look at the "
     "screen on the right of the kiosk."
 )
+
+AVAILABILITY_TTL_SEC = 5.0
 
 
 class ChatBudgetError(RuntimeError):
@@ -49,7 +55,23 @@ class ChatBackendError(RuntimeError):
 class _Backend:
     label = "?"
 
+    def __init__(self):
+        self._cache_ok: bool | None = None
+        self._cache_at: float = 0.0
+
     def available(self) -> bool:
+        now = time.time()
+        if self._cache_ok is not None and now - self._cache_at < AVAILABILITY_TTL_SEC:
+            return self._cache_ok
+        ok = self._probe()
+        self._cache_ok = ok
+        self._cache_at = now
+        return ok
+
+    def invalidate(self) -> None:
+        self._cache_ok = None
+
+    def _probe(self) -> bool:
         raise NotImplementedError
 
     def complete(self, question: str, system: str) -> str:
@@ -60,12 +82,13 @@ class OpenAIBackend(_Backend):
     label = "OpenAI"
 
     def __init__(self, api_key: str, model: str):
+        super().__init__()
         self.api_key = api_key
         self.model = model
         self.label = f"OpenAI · {model}"
         self._client = None
 
-    def available(self) -> bool:
+    def _probe(self) -> bool:
         if not self.api_key:
             return False
         try:
@@ -93,19 +116,24 @@ class OllamaBackend(_Backend):
     label = "Ollama (local)"
 
     def __init__(self, url: str, model: str):
+        super().__init__()
         self.url = url.rstrip("/")
         self.model = model
         self.label = f"Ollama (local) · {model}"
 
-    def available(self) -> bool:
+    def _probe(self) -> bool:
+        # Cheap reachability probe via socket (no HTTP). Avoids parsing
+        # /api/tags JSON, which Hailo-Ollama can return with a slightly
+        # different schema. The actual model error (if any) surfaces
+        # when complete() runs.
         try:
-            r = requests.get(f"{self.url}/api/tags", timeout=1.5)
-            r.raise_for_status()
-            tags = {m.get("name", "").split(":")[0] for m in r.json().get("models", [])}
-            tags.update(m.get("name", "") for m in r.json().get("models", []))
-            base = self.model.split(":")[0]
-            return base in tags or self.model in tags
-        except Exception:
+            from urllib.parse import urlparse
+            u = urlparse(self.url)
+            host = u.hostname or "localhost"
+            port = u.port or (443 if u.scheme == "https" else 80)
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
             return False
 
     def complete(self, question: str, system: str) -> str:
