@@ -266,6 +266,27 @@ class RightPanel:
             )
         return views.render_projects_panel([], 0, 0, session_count, size)
 
+    # ---- mouse / touch input ------------------------------------------
+
+    def handle_click(self, x: int, y: int) -> dict:
+        """Click given in panel-local coordinates (origin top-left of the
+        right pane). Returns the same shape of dict as handle_key."""
+        out: dict = {}
+        # Tab strip is the top ~38 px of the panel.
+        if y < 38:
+            tabs = ["PROJECTS", "REGISTER", "CHAT"]
+            tab_w = config.PANEL_WIDTH // len(tabs)
+            idx = max(0, min(len(tabs) - 1, x // tab_w))
+            self.set_tab(tabs[idx])
+            out["activity"] = True
+            return out
+        # CHAT tab: clicking the input box just signals activity (typing
+        # uses the keyboard). We could open a software keyboard here in a
+        # future iteration.
+        if self.tab == "CHAT" and y > config.WINDOW_SIZE[1] - 70:
+            out["activity"] = True
+        return out
+
     # ---- keyboard input ----------------------------------------------
 
     _chat_emp_id: str = "anon"
@@ -527,27 +548,68 @@ def main():
     seen_in_session: set[str] = set()
     last_known_emp_id = "anon"
 
+    # ---- mouse / touch ---------------------------------------------------
+    # Single-element list so the cv2 callback (running on the GUI thread)
+    # can hand a click off to the main loop without locking. Touchscreens
+    # deliver button events as mouse events, so this covers both inputs.
+    pending_click: list = [None]
+
+    def on_mouse(event, mx, my, flags, _param):  # noqa: ARG001
+        if event == cv2.EVENT_LBUTTONDOWN:
+            pending_click[0] = (mx, my)
+
+    if show_preview:
+        cv2.namedWindow("Echo AI", cv2.WINDOW_AUTOSIZE)
+        cv2.setMouseCallback("Echo AI", on_mouse)
+
+    def go_active(reason: str) -> None:
+        nonlocal state, activated_at, last_interaction_at, session_id
+        state = "ACTIVE"
+        activated_at = time.time()
+        last_interaction_at = activated_at
+        if listener is not None:
+            listener.deactivate()
+        greeter.reset_last()
+        liveness.reset()
+        blink_confirmed.clear()
+        seen_in_session.clear()
+        session_id = uuid.uuid4().hex[:12]
+        chat.budget.reset()
+        panel.session_reset()
+        panel.reload_projects()
+        tts.flush()
+        greeter.say("Hello. I am ready.")
+        print(f"[state] IDLE -> ACTIVE via {reason} (session {session_id})")
+
     try:
         while True:
             frame = grab_frame(cam)
 
+            # ---- mouse / touch input -------------------------------
+            click = pending_click[0]
+            if click is not None:
+                pending_click[0] = None
+                if state == "IDLE":
+                    # Touch / click anywhere on the welcome screen wakes
+                    # the kiosk (same effect as the wake word). Useful
+                    # when Vosk is offline or the visitor is in a
+                    # noisy environment.
+                    go_active("touch")
+                elif show_preview:
+                    # Translate window pixels to logical (un-scaled)
+                    # coords, then split into camera vs panel.
+                    scale = config.DISPLAY_SCALE or 1.0
+                    wx = int(click[0] / scale)
+                    wy = int(click[1] / scale)
+                    cam_w = config.WINDOW_SIZE[0] - config.PANEL_WIDTH
+                    if wx >= cam_w:
+                        actions = panel.handle_click(wx - cam_w, wy)
+                        if actions:
+                            last_interaction_at = time.time()
+
             # ---- IDLE -> ACTIVE on wake word -------------------------
             if state == "IDLE" and listener is not None and listener.is_activated():
-                state = "ACTIVE"
-                activated_at = time.time()
-                last_interaction_at = activated_at
-                listener.deactivate()
-                greeter.reset_last()
-                liveness.reset()
-                blink_confirmed.clear()
-                seen_in_session.clear()
-                session_id = uuid.uuid4().hex[:12]
-                chat.budget.reset()
-                panel.session_reset()
-                panel.reload_projects()
-                tts.flush()
-                greeter.say("Hello. I am ready.")
-                print(f"[state] IDLE -> ACTIVE (session {session_id})")
+                go_active("wake-word")
 
             # ---- recognition (only in ACTIVE) -----------------------
             biggest_quality_unknown = False
@@ -615,13 +677,17 @@ def main():
                         last_known_emp_id = emp_id
                         panel.set_chat_emp_id(emp_id)
 
-                # Auto-jump to REGISTER tab when an unknown stick around.
+                # Auto-jump to REGISTER tab when an unknown sticks around,
+                # but only if the user is on the default PROJECTS view.
+                # Hijacking someone mid-chat or mid-registration is jarring
+                # -- if they want to register a different person they can
+                # press R themselves.
                 if biggest_quality_unknown:
                     last_interaction_at = time.time()
                     unknown_streak += 1
                     if (args.auto_register
                             and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
-                            and panel.tab != "REGISTER"):
+                            and panel.tab == "PROJECTS"):
                         unknown_streak = 0
                         panel.set_tab("REGISTER")
                         panel.register_message = (
@@ -635,6 +701,16 @@ def main():
                     unknown_streak = 0
 
                 # Idle timeout.
+                # Don't sleep while the user is on REGISTER or CHAT, or
+                # while a chat reply is in flight -- those are explicit
+                # signs the user is engaged even if nothing else is
+                # changing on the camera side.
+                user_engaged = (
+                    panel.tab in ("REGISTER", "CHAT")
+                    or panel.chat_pending_future is not None
+                )
+                if user_engaged:
+                    last_interaction_at = time.time()
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
                 if (idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
                         or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)):
@@ -696,6 +772,10 @@ def main():
                 if key == ord("q"):
                     break
                 if state == "ACTIVE" and key != 0xFF:
+                    # Any keystroke counts as user activity -- typing in
+                    # CHAT or REGISTER must keep the kiosk awake even if
+                    # nobody is in front of the camera.
+                    last_interaction_at = time.time()
                     actions = panel.handle_key(key)
                     if actions.get("submit_register"):
                         run_in_panel_registration(
@@ -706,6 +786,10 @@ def main():
                     if (q := actions.get("submit_chat")):
                         _submit_chat(panel, chat, last_known_emp_id, q)
                         last_interaction_at = time.time()
+                elif state == "IDLE" and key == ord(" "):
+                    # Space bar in IDLE wakes the kiosk too -- handy when
+                    # there's no mic or you're testing.
+                    go_active("space-key")
             else:
                 # Headless: just keep the loop running.
                 time.sleep(0.02)
