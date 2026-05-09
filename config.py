@@ -165,7 +165,9 @@ WEATHER_FALLBACK_CITY = None      # used as label when lat/lon are pinned
 
 # ---- OpenAI / Ollama chat -------------------------------------------------
 OPENAI_MODEL = "gpt-4o-mini"
-OLLAMA_URL = "http://localhost:8080"   # Hailo-Ollama default; upstream Ollama uses 11434
+OLLAMA_URL = "http://localhost:11434"  # Ollama daemon (Go, port 11434).
+                                       # Port 8080 on the kiosk is Open WebUI (uvicorn),
+                                       # not the API surface we want.
 OLLAMA_MODEL = "qwen3:1.7b"       # qwen3 instruct on Hailo-Ollama; bigger
                                   # alternatives that fit on Pi 5: "qwen2.5:1.5b"
                                   # avoid "deepseek_r1:*" (emits <think> blocks)

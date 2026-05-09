@@ -85,8 +85,20 @@ export OPENAI_API_KEY
 # fallback -- runs LLM inference on the Hailo-10H, listens on port 8080.
 # We probe the API; if it's down we launch the binary in the background.
 # Failure here is non-fatal: chat just goes through OpenAI.
-: "${OLLAMA_URL:=http://localhost:8080}"
-ollama_up() { curl -sf -m 1 "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; }
+# NOTE: the Ollama daemon listens on 11434 by default. Open WebUI (the
+# Python frontend the user has running on :8080) is *not* an Ollama API
+# endpoint -- it serves HTML for the kiosk dashboard.
+: "${OLLAMA_URL:=http://localhost:11434}"
+# Sanity-probe the API by asking for the JSON tag list. /api/tags on
+# real Ollama returns a {"models":[...]} document; uvicorn / Open WebUI
+# returns HTML, which is how we caught the previous misconfiguration.
+ollama_up() {
+    local out
+    out=$(curl -sf -m 1 -H "Accept: application/json" \
+                "${OLLAMA_URL}/api/tags" 2>/dev/null) || return 1
+    [[ "$out" == \{* ]] || return 1
+    return 0
+}
 
 if ollama_up; then
     echo "   hailo-ollama : up at ${OLLAMA_URL}"
