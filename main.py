@@ -31,6 +31,7 @@ import os
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
 
 import argparse
+import queue
 import time
 import uuid
 from concurrent.futures import Future
@@ -207,6 +208,7 @@ class RightPanel:
         self.chat_partial = ""
         self.chat_pending_future: Future | None = None
         self.chat_pending_started_at = 0.0
+        self.chat_listening = False
 
     # ---- session lifecycle --------------------------------------------
 
@@ -220,6 +222,7 @@ class RightPanel:
         self.chat_input_mode = config.CHAT_VOICE_MODE_DEFAULT
         self.chat_partial = ""
         self.chat_pending_future = None
+        self.chat_listening = False
 
     def reload_projects(self) -> None:
         self.projects = self.db.list_projects()
@@ -230,6 +233,10 @@ class RightPanel:
     def set_tab(self, tab: str) -> None:
         if tab not in ("PROJECTS", "REGISTER", "CHAT"):
             return
+        if self.tab == "CHAT" and tab != "CHAT":
+            # Leaving chat -- the main loop will read self.chat_listening
+            # and call stop_chat_listening() to revert the recognizer.
+            self.chat_listening = False
         self.tab = tab
         if tab == "PROJECTS":
             self.reload_projects()
@@ -259,6 +266,9 @@ class RightPanel:
             if self.chat_pending_future is not None:
                 dots = "." * (int(time.time() * 2) % 4)
                 partial = f"thinking{dots}"
+            elif self.chat_listening:
+                dots = "." * (int(time.time() * 2) % 4)
+                partial = f"listening{dots} (tap or press space to stop)"
             return views.render_chat_panel(
                 self.chat_history, remaining, self.chat_input_mode,
                 partial, self.chat.status(),
@@ -280,11 +290,14 @@ class RightPanel:
             self.set_tab(tabs[idx])
             out["activity"] = True
             return out
-        # CHAT tab: clicking the input box just signals activity (typing
-        # uses the keyboard). We could open a software keyboard here in a
-        # future iteration.
+        # CHAT tab: clicking the input box toggles voice listening.
         if self.tab == "CHAT" and y > config.WINDOW_SIZE[1] - 70:
             out["activity"] = True
+            if self.chat_input_mode == "voice":
+                if self.chat_listening:
+                    out["stop_listening"] = True
+                else:
+                    out["start_listening"] = True
         return out
 
     # ---- keyboard input ----------------------------------------------
@@ -356,15 +369,24 @@ class RightPanel:
         if key == 27:           # Esc -> back to projects
             self.set_tab("PROJECTS")
             self.chat_partial = ""
+            out["stop_listening"] = True
             return out
         if key == ord("v") or key == ord("V"):
             self.chat_input_mode = (
                 "keyboard" if self.chat_input_mode == "voice" else "voice"
             )
             self.chat_partial = ""
+            out["stop_listening"] = True
             return out
-        if self.chat_input_mode != "keyboard":
+        if self.chat_input_mode == "voice":
+            # Space toggles voice listening on/off so the user can talk.
+            if key == ord(" "):
+                if self.chat_listening:
+                    out["stop_listening"] = True
+                else:
+                    out["start_listening"] = True
             return out
+        # Keyboard mode below.
         if key == 8 or key == 127:
             self.chat_partial = self.chat_partial[:-1]
             return out
@@ -384,8 +406,13 @@ class RightPanel:
 
 def capture_with_prompts(
     cam: Picamera2, pipe: HailoFacePipeline, greeter: Greeter,
-    tts: AsyncTTS,
+    tts: AsyncTTS, render_frame=None,
 ) -> list[np.ndarray]:
+    """If render_frame is given, it's called every iteration with
+    (frame, det_or_None, prompt_str, pose_idx, total_poses, status_str).
+    The callback is responsible for drawing to the cv2 window and
+    handling waitKey -- that keeps the kiosk display responsive while
+    pose capture runs."""
     embeddings: list[np.ndarray] = []
     prompts = config.POSE_PROMPTS
     baseline_anchor = None
@@ -394,8 +421,13 @@ def capture_with_prompts(
     for i, (prompt, direction) in enumerate(prompts, start=1):
         greeter.say(prompt)
         # Wait for the prompt to finish playing before we start watching
-        # for the user's pose change. Keeps the camera FPS up the whole time.
-        tts.wait_idle(timeout=8)
+        # for the user's pose change. Render every frame while waiting so
+        # the camera preview keeps updating during the audio.
+        wait_deadline = time.time() + 8
+        while not tts.wait_idle(timeout=0.05) and time.time() < wait_deadline:
+            if render_frame is not None:
+                render_frame(grab_frame(cam), None, prompt, i, len(prompts),
+                             "speaking...")
         hold_until = time.time() + config.POSE_HOLD_SEC
         deadline = time.time() + config.POSE_HOLD_SEC + config.POSE_CAPTURE_TIMEOUT_SEC
         stable_since = None
@@ -410,6 +442,17 @@ def capture_with_prompts(
             ok = False
             if det is not None:
                 ok, _ = is_quality_face(det, frame.shape)
+            status = "looking for face..."
+            if det is None:
+                status = "step into frame"
+            elif not ok:
+                status = "move closer / face the camera"
+            elif time.time() < hold_until:
+                status = "hold steady..."
+            else:
+                status = "capturing — hold the pose"
+            if render_frame is not None:
+                render_frame(frame, det, prompt, i, len(prompts), status)
 
             if ok and time.time() >= hold_until:
                 anchor, eye_dist = landmark_anchor(det)
@@ -453,9 +496,13 @@ def capture_with_prompts(
 def run_in_panel_registration(
     panel: RightPanel, db: FaceDB, greeter: Greeter, tts: AsyncTTS,
     cam: Picamera2, pipe: HailoFacePipeline,
+    render_capture=None,
 ) -> bool:
     """Called when the REGISTER tab submits. Captures poses and writes
-    to the DB. Returns True on successful (re-)registration."""
+    to the DB. Returns True on successful (re-)registration.
+
+    `render_capture` is forwarded into capture_with_prompts so the cv2
+    window keeps updating during the multi-second pose loop."""
     f = panel.register_form
     f.busy = True
     panel.register_message = "Capturing your photo — follow the friendly voice prompts!"
@@ -467,7 +514,7 @@ def run_in_panel_registration(
     else:
         existing_name = f.name
 
-    embeddings = capture_with_prompts(cam, pipe, greeter, tts)
+    embeddings = capture_with_prompts(cam, pipe, greeter, tts, render_capture)
     if not embeddings:
         panel.register_message = ("Hmm, we couldn't capture a clear photo. "
                                    "Take a step closer and try again.")
@@ -565,6 +612,32 @@ def main():
         cv2.namedWindow("Echo AI", cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback("Echo AI", on_mouse)
 
+    # ---- chat voice (free-form ASR) -------------------------------------
+    # Final transcripts from the wake-word listener (when in freeform mode)
+    # land here; the main loop drains the queue and submits them as chat
+    # questions.
+    chat_voice_q: queue.Queue = queue.Queue()
+
+    def _on_chat_voice_final(text: str) -> None:
+        chat_voice_q.put(text)
+
+    def start_chat_listening() -> None:
+        if listener is None:
+            return
+        if panel.chat_listening:
+            return
+        listener.set_freeform(_on_chat_voice_final)
+        panel.chat_listening = True
+
+    def stop_chat_listening() -> None:
+        if listener is None:
+            panel.chat_listening = False
+            return
+        if not panel.chat_listening:
+            return
+        listener.set_wake()
+        panel.chat_listening = False
+
     def go_active(reason: str) -> None:
         nonlocal state, activated_at, last_interaction_at, session_id
         state = "ACTIVE"
@@ -609,6 +682,31 @@ def main():
                         actions = panel.handle_click(wx - cam_w, wy)
                         if actions:
                             last_interaction_at = time.time()
+                        if actions.get("start_listening"):
+                            start_chat_listening()
+                        if actions.get("stop_listening"):
+                            stop_chat_listening()
+
+            # ---- keep listener mode in sync with panel state ------
+            # If anything (tab change, idle-out, etc.) flipped
+            # panel.chat_listening to False, revert the recognizer to
+            # wake-word grammar. Otherwise wake-word detection won't fire.
+            if listener is not None and listener.mode == "freeform" \
+                    and not panel.chat_listening:
+                listener.set_wake()
+
+            # ---- drain free-form ASR results -----------------------
+            try:
+                while True:
+                    spoken = chat_voice_q.get_nowait()
+                    if state != "ACTIVE" or not spoken:
+                        continue
+                    stop_chat_listening()
+                    panel.chat_partial = ""
+                    _submit_chat(panel, chat, last_known_emp_id, spoken)
+                    last_interaction_at = time.time()
+            except queue.Empty:
+                pass
 
             # ---- IDLE -> ACTIVE on wake word -------------------------
             if state == "IDLE" and listener is not None and listener.is_activated():
@@ -787,9 +885,38 @@ def main():
                     # nobody is in front of the camera.
                     last_interaction_at = time.time()
                     actions = panel.handle_key(key)
+                    if actions.get("start_listening"):
+                        start_chat_listening()
+                    if actions.get("stop_listening"):
+                        stop_chat_listening()
                     if actions.get("submit_register"):
+                        def _render_capture(f, det, prompt, idx, total, status):
+                            panel.register_message = (
+                                f"Pose {idx}/{total}: {prompt}\n{status}"
+                            )
+                            cam_w = config.WINDOW_SIZE[0] - config.PANEL_WIDTH
+                            cam_h = config.WINDOW_SIZE[1]
+                            cam_pane = resize_to_camera_pane(f, cam_w, cam_h)
+                            if det is not None:
+                                pane_dets = _rescale_dets(
+                                    [det], f.shape, cam_pane.shape,
+                                )
+                                draw_face_overlays(
+                                    cam_pane, pane_dets, lambda _d: status,
+                                )
+                            panel_img = panel.render(len(seen_in_session))
+                            composed = views.render_active(cam_pane, panel_img)
+                            if config.DISPLAY_SCALE != 1.0:
+                                nw = max(1, int(composed.shape[1] * config.DISPLAY_SCALE))
+                                nh = max(1, int(composed.shape[0] * config.DISPLAY_SCALE))
+                                composed = cv2.resize(
+                                    composed, (nw, nh),
+                                    interpolation=cv2.INTER_AREA,
+                                )
+                            cv2.imshow("Echo AI", composed)
+                            cv2.waitKey(1)
                         run_in_panel_registration(
-                            panel, db, greeter, tts, cam, pipe,
+                            panel, db, greeter, tts, cam, pipe, _render_capture,
                         )
                         emp_ids, names, matrix = db.load_all()
                         last_interaction_at = time.time()
@@ -804,6 +931,10 @@ def main():
                 # Headless: just keep the loop running.
                 time.sleep(0.02)
     finally:
+        try:
+            stop_chat_listening()
+        except Exception:
+            pass
         if listener is not None:
             listener.stop()
         weather.stop()

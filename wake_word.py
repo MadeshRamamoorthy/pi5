@@ -60,15 +60,19 @@ class WakeWordListener:
         self.target_rate = samplerate
         self._on_partial = on_partial
         self._on_final = on_final
+        self._chat_on_final = None     # set by set_freeform()
+        self._chat_on_partial = None
+        self._mode = "wake"            # "wake" | "freeform"
 
         try:
             self.device, self.native_rate = pick_input_device(device)
         except Exception as exc:  # noqa: BLE001
             raise WakeWordError(f"could not query input device: {exc}")
 
-        grammar = json.dumps([self.keyword, "[unk]"])
+        self._grammar = json.dumps([self.keyword, "[unk]"])
         self._model = vosk.Model(str(model_dir))
-        self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate, grammar)
+        self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate, self._grammar)
+        self._lock = threading.Lock()
 
         self._activated = threading.Event()
         self._stop = threading.Event()
@@ -91,12 +95,36 @@ class WakeWordListener:
     def is_activated(self) -> bool:
         return self._activated.is_set()
 
+    @property
+    def mode(self) -> str:
+        return self._mode
+
     def deactivate(self) -> None:
         self._activated.clear()
         try:
             self._recognizer.Reset()
         except Exception:
             pass
+
+    def set_freeform(self, on_final, on_partial=None) -> None:
+        """Switch the recognizer out of wake-word grammar mode and into
+        unrestricted dictation. Final transcripts go to `on_final(text)`.
+        Use for the CHAT tab's voice input. Call set_wake() to revert."""
+        with self._lock:
+            self._chat_on_final = on_final
+            self._chat_on_partial = on_partial
+            # Build a no-grammar recognizer so any speech can transcribe.
+            self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate)
+            self._mode = "freeform"
+
+    def set_wake(self) -> None:
+        with self._lock:
+            self._chat_on_final = None
+            self._chat_on_partial = None
+            self._recognizer = vosk.KaldiRecognizer(
+                self._model, self.target_rate, self._grammar
+            )
+            self._mode = "wake"
 
     # internal -----------------------------------------------------------
 
@@ -135,8 +163,20 @@ class WakeWordListener:
                 self._consume(data)
 
     def _consume(self, data: bytes) -> None:
-        if self._recognizer.AcceptWaveform(data):
-            text = json.loads(self._recognizer.Result()).get("text", "").strip().lower()
+        with self._lock:
+            recog = self._recognizer
+            mode = self._mode
+            chat_on_final = self._chat_on_final
+            chat_on_partial = self._chat_on_partial
+        if recog.AcceptWaveform(data):
+            text = json.loads(recog.Result()).get("text", "").strip().lower()
+            if mode == "freeform":
+                if text and chat_on_final:
+                    try:
+                        chat_on_final(text)
+                    except Exception:
+                        pass
+                return
             if text and self._on_final:
                 try:
                     self._on_final(text)
@@ -154,7 +194,14 @@ class WakeWordListener:
             if text == self.keyword or text.startswith(self.keyword + " "):
                 self._activated.set()
         else:
-            text = json.loads(self._recognizer.PartialResult()).get("partial", "")
+            text = json.loads(recog.PartialResult()).get("partial", "")
+            if mode == "freeform":
+                if text and chat_on_partial:
+                    try:
+                        chat_on_partial(text)
+                    except Exception:
+                        pass
+                return
             if text and self._on_partial:
                 try:
                     self._on_partial(text)
