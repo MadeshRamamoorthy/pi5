@@ -172,7 +172,8 @@ class ChatBudget:
         used = self._used.get(emp_id, 0)
         if used >= self.max_questions:
             raise ChatBudgetError(
-                f"Question budget reached ({self.max_questions} max)."
+                f"Lovely chatting! That's {self.max_questions} questions for "
+                "now — come say hi again anytime."
             )
         self._used[emp_id] = used + 1
         return self._used[emp_id]
@@ -206,7 +207,8 @@ class ChatClient:
 
     def status(self) -> str:
         b = self.pick_backend()
-        return b.label if b else "Chat unavailable — no backend reachable"
+        return (b.label if b
+                else "Chat is taking a quick break — back online shortly.")
 
     def submit(self, emp_id: str, question: str
                ) -> "concurrent.futures.Future[str]":

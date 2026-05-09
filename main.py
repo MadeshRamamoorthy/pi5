@@ -335,10 +335,10 @@ class RightPanel:
             return out
         if key in (10, 13):     # Enter -> submit
             if not f.emp_id.strip():
-                self.register_message = "Employee ID is required."
+                self.register_message = "Please enter your Employee ID first."
                 return out
             if not f.name.strip():
-                self.register_message = "Name is required."
+                self.register_message = "Please enter your name to continue."
                 return out
             out["submit_register"] = True
             return out
@@ -442,7 +442,7 @@ def capture_with_prompts(
                 last_lms = None
 
         if not captured:
-            greeter.say("Skipping this pose. Let's continue.")
+            greeter.say("That's okay! Let's try the next one.")
             tts.wait_idle(timeout=4)
     return embeddings
 
@@ -458,18 +458,20 @@ def run_in_panel_registration(
     to the DB. Returns True on successful (re-)registration."""
     f = panel.register_form
     f.busy = True
-    panel.register_message = "Capturing samples — follow the voice prompts."
+    panel.register_message = "Capturing your photo — follow the friendly voice prompts!"
 
     is_existing = db.employee_exists(f.emp_id)
     if is_existing:
         existing_name = db.get_name(f.emp_id) or ""
-        greeter.say(f"{f.emp_id} already exists. Verifying.")
+        greeter.say(f"Welcome back, {existing_name}! Just confirming it's you.")
     else:
         existing_name = f.name
 
     embeddings = capture_with_prompts(cam, pipe, greeter, tts)
     if not embeddings:
-        panel.register_message = "Registration failed. No face captured."
+        panel.register_message = ("Hmm, we couldn't capture a clear photo. "
+                                   "Take a step closer and try again.")
+        greeter.say("Let's give that another go.")
         f.busy = False
         return False
 
@@ -477,18 +479,19 @@ def run_in_panel_registration(
         emp_ids, _, matrix = db.load_all()
         score = best_self_match(embeddings, emp_ids, matrix, f.emp_id)
         if score < config.REREGISTER_MATCH_THRESHOLD:
-            panel.register_message = "This face does not match the existing employee."
-            greeter.say("Registration refused.")
+            panel.register_message = ("Looks like a fresh face! "
+                                       "Try a new Employee ID to register.")
+            greeter.say("Let's set you up with a new profile.")
             f.busy = False
             return False
         for e in embeddings:
             db.add_embedding(f.emp_id, e)
-        greeter.say(f"Added {len(embeddings)} new samples.")
-        panel.register_message = f"Updated {existing_name} ({f.emp_id})."
+        greeter.say(f"Wonderful, I've added {len(embeddings)} new looks for you.")
+        panel.register_message = f"Welcome back, {existing_name}! All updated."
     else:
         db.add_employee(f.emp_id, f.name, embeddings)
-        greeter.say(f"Thank you {f.name}, you are now registered.")
-        panel.register_message = f"Registered {f.name} ({f.emp_id})."
+        greeter.say(f"Welcome aboard, {f.name}! Lovely to meet you.")
+        panel.register_message = f"Welcome, {f.name}! You are all set."
 
     f.busy = False
     panel.set_tab("PROJECTS")  # back to default after success
@@ -578,7 +581,7 @@ def main():
         panel.session_reset()
         panel.reload_projects()
         tts.flush()
-        greeter.say("Hello. I am ready.")
+        greeter.say("Hello! Lovely to see you.")
         print(f"[state] IDLE -> ACTIVE via {reason} (session {session_id})")
 
     try:
@@ -662,7 +665,7 @@ def main():
                             blink_confirmed.add(eid)
                         last_interaction_at = time.time()
                     else:
-                        greeter.say("Blink not detected. Please try again.")
+                        greeter.say("One more blink, please!")
                         pending_greets = [
                             g for g in pending_greets if g[0] in blink_confirmed
                         ]
@@ -691,11 +694,12 @@ def main():
                         unknown_streak = 0
                         panel.set_tab("REGISTER")
                         panel.register_message = (
-                            "New face detected. Type your details below "
-                            "and press Enter."
+                            "Hi there! Pop your name and Employee ID below "
+                            "and press Enter to introduce yourself."
                         )
                         greeter.say(
-                            "I do not recognise you. Please register on the screen."
+                            "Hello! Looks like you're new — please pop your "
+                            "details into the screen so I can greet you next time."
                         )
                 else:
                     unknown_streak = 0
@@ -734,11 +738,17 @@ def main():
                     except ChatBudgetError as exc:
                         panel.chat_history.append(("assistant", str(exc)))
                     except ChatBackendError as exc:
-                        panel.chat_history.append(("assistant",
-                                                   f"Sorry — {exc}"))
+                        panel.chat_history.append((
+                            "assistant",
+                            "I'm having a little trouble reaching the chat "
+                            f"service right now — let's try again in a moment. ({exc})"
+                        ))
                     except Exception as exc:  # noqa: BLE001
-                        panel.chat_history.append(("assistant",
-                                                   f"Chat error: {exc}"))
+                        panel.chat_history.append((
+                            "assistant",
+                            f"Hmm, something went sideways: {exc}. "
+                            "Please try again."
+                        ))
 
             # ---- render -----------------------------------------------
             if show_preview:
@@ -810,8 +820,11 @@ def _submit_chat(panel: RightPanel, chat: ChatClient, emp_id: str,
                  question: str) -> None:
     panel.chat_history.append(("user", question))
     if chat.budget.remaining(emp_id) <= 0:
-        panel.chat_history.append(("assistant",
-                                   "Question budget reached for this session."))
+        panel.chat_history.append((
+            "assistant",
+            f"Lovely chatting! That's {config.CHAT_MAX_QUESTIONS_PER_SESSION} "
+            "questions for now — come say hi again anytime."
+        ))
         return
     panel.chat_pending_future = chat.submit(emp_id, question)
     panel.chat_pending_started_at = time.time()

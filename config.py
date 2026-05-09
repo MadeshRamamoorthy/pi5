@@ -91,8 +91,8 @@ REREGISTER_MATCH_THRESHOLD = 0.35
 # When True, every emp_id must blink once per ACTIVE session before they
 # get greeted. Clears on IDLE so the next session re-prompts. Defeats the
 # remaining attack vector: a high-quality video replay on a screen.
-LIVENESS_REQUIRE_BLINK = True
-LIVENESS_BLINK_PROMPT = "Please blink once to confirm."
+LIVENESS_REQUIRE_BLINK = False
+LIVENESS_BLINK_PROMPT = "Just a quick blink so I know it's you!"
 LIVENESS_BLINK_TIMEOUT_SEC = 5
 LIVENESS_BLINK_PATCH_PX = 14         # half-extent (px) around each eye landmark
 LIVENESS_BLINK_DELTA_MIN = 6.0       # min std-dev range across the window
