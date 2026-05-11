@@ -130,7 +130,11 @@ def create_app(
     @app.route("/api/register/photo", methods=["POST"])
     def api_register_photo():
         """Multipart: emp_id, name, photos[]. Skips pose capture --
-        each uploaded photo becomes one embedding."""
+        each uploaded photo becomes one embedding. Admin-only: photo
+        upload is the back-office path; kiosk users go through the
+        live-capture flow."""
+        if not _check_admin_auth():
+            return _request_admin_auth()
         emp_id = (request.form.get("emp_id") or "").strip()
         name = (request.form.get("name") or "").strip()
         if not emp_id or not name:

@@ -305,13 +305,18 @@ class CameraWorker(threading.Thread):
             try:
                 while True:
                     req = self.register_q.get_nowait()
-                    # "Skip" sentinel: user declined. Close overlay,
-                    # start the decline cooldown so we don't immediately
-                    # re-open from the unknown-face streak.
+                    # "Skip" sentinel: user declined. Speak one of the
+                    # decline_registration lines from messages.py, close
+                    # the overlay, and drop straight back to the
+                    # dashboard (IDLE) -- no point hanging around.
                     if isinstance(req, dict) and req.get("action") == "skip":
                         self._register_declined_at = time.time()
                         self.state.update(register_open=False,
                                           register_pose=None)
+                        self.greeter.say(messages.random_registration_prompt(
+                            "decline_registration",
+                        ))
+                        self.idle_event.set()
                         continue
                     if kiosk_state != "ACTIVE":
                         continue

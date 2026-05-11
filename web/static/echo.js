@@ -333,28 +333,7 @@
     const emp_id = $("#register-emp-id").value.trim();
     const name   = $("#register-name").value.trim();
     if (!emp_id || !name) return;
-    const files = $("#register-photos")?.files;
-    if (files && files.length > 0) {
-      // Photo upload path -- skip live pose capture.
-      const fd = new FormData();
-      fd.append("emp_id", emp_id);
-      fd.append("name", name);
-      for (const f of files) fd.append("photos", f);
-      fetch("/api/register/photo", { method: "POST", body: fd })
-        .catch(e => console.warn("photo register failed", e));
-    } else {
-      postJSON("/api/register", { emp_id, name });
-    }
-  });
-  // Visually echo selected filenames so the user knows the upload is queued.
-  $("#register-photos")?.addEventListener("change", (ev) => {
-    const hint = $("#register-photo-hint");
-    if (!hint) return;
-    const files = ev.target.files;
-    if (!files || !files.length) { hint.hidden = true; return; }
-    hint.hidden = false;
-    const names = Array.from(files).map(f => f.name).join(", ");
-    hint.textContent = `Will upload: ${names}`;
+    postJSON("/api/register", { emp_id, name });
   });
   $("#register-skip")?.addEventListener("click", () => {
     post("/api/register/skip");

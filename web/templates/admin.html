@@ -44,6 +44,7 @@
   <button class="tab-btn active" data-tab="projects">Projects</button>
   <button class="tab-btn"        data-tab="sessions">Sessions</button>
   <button class="tab-btn"        data-tab="employees">Employees</button>
+  <button class="tab-btn"        data-tab="photo-register">Register from photo</button>
 </div>
 
 <section class="tab-panel active" data-panel="projects">
@@ -86,9 +87,35 @@
   <tbody></tbody>
 </table>
 <p class="sub" style="margin-top: 6px;">
-  To register a new person, use the kiosk: wake it up, stand in front of
-  the camera, and follow the on-screen registration overlay.
+  Register from the kiosk (wake → camera flow) or from photos under the
+  "Register from photo" tab.
 </p>
+</section>
+
+<section class="tab-panel" data-panel="photo-register">
+<h2>Register from photo</h2>
+<p class="sub">Upload one or more photos of the same person. Each image
+that contains a clear, frontal face becomes one embedding. The kiosk
+recognises them next time they walk up.</p>
+<form id="photo-register-form" style="margin-top: 16px;">
+  <table>
+    <tr>
+      <td style="width: 200px"><input type="text" name="emp_id" placeholder="Employee ID" required></td>
+      <td><input type="text" name="name" placeholder="Full name" required></td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <input type="file" name="photos" accept="image/*" multiple required>
+        <p class="sub" style="margin-top: 4px;">Tip: 3-5 photos at slightly different angles work best.</p>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2"><button type="submit">Upload &amp; register</button>
+        <span id="photo-register-status" class="sub" style="margin-left: 12px;"></span>
+      </td>
+    </tr>
+  </table>
+</form>
 </section>
 
 <script>
@@ -195,6 +222,23 @@ document.getElementById("add-session").addEventListener("submit", async (ev) => 
   });
   f.reset(); refresh();
 });
+document.getElementById("photo-register-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  const status = document.getElementById("photo-register-status");
+  status.textContent = "Uploading…";
+  const fd = new FormData(f);
+  const r = await fetch("/api/register/photo", { method: "POST", body: fd });
+  if (r.ok) {
+    status.textContent = "Done — embeddings queued.";
+    f.reset();
+    refresh();
+  } else {
+    const t = await r.text();
+    status.textContent = `Failed: ${t || r.status}`;
+  }
+});
+
 refresh();
 
 // Tab switching.
