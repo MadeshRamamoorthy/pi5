@@ -188,7 +188,7 @@ fi
 # ---- Launch the kiosk ----------------------------------------------------
 # Backend (Flask + camera worker) runs in the background; once it's
 # serving /api/state we open Chromium in kiosk mode pointed at the SPA.
-: "${KIOSK_PORT:=8080}"
+: "${KIOSK_PORT:=8090}"
 : "${KIOSK_URL:=http://127.0.0.1:${KIOSK_PORT}}"
 : "${KIOSK_BROWSER:=auto}"
 : "${KIOSK_BACKEND_LOG:=/tmp/echo-backend.log}"

@@ -164,7 +164,7 @@ PANEL_WIDTH = 540
 
 # ---- Weather widget -------------------------------------------------------
 KIOSK_HOST = "127.0.0.1"
-KIOSK_PORT = 8080
+KIOSK_PORT = 8090   # 8080 is commonly taken by Open WebUI / similar.
 FUN_FACT_ROTATE_SEC = 15
 MJPEG_QUALITY = 80                # JPEG quality for the camera stream
 MJPEG_MAX_FPS = 20                # display only; detection runs at full rate
