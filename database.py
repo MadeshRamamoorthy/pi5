@@ -59,7 +59,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_starts ON sessions(starts_at);
 
 class FaceDB:
     def __init__(self, path: Path = DB_PATH):
-        self.conn = sqlite3.connect(str(path))
+        # check_same_thread=False: FaceDB is shared between the Flask
+        # request threads (admin endpoints) and the camera worker
+        # thread. SQLite itself serialises writes internally, and our
+        # workload is light enough that lock contention is a non-issue.
+        self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()

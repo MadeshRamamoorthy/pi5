@@ -361,6 +361,11 @@ body[data-listening="true"] .listening-pill .live-dot {
   z-index: 50;
   backdrop-filter: blur(6px);
 }
+/* CSS display:flex on .overlay otherwise overrides the HTML hidden
+   attribute, so the register / chat overlays would show on initial
+   page load. This puts the hide rule back. */
+.overlay[hidden],
+[hidden] { display: none !important; }
 .overlay-card {
   width: min(540px, 92vw);
   background: var(--bg-grad-1);
