@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ECHO SCOPE — admin</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 24px auto;
+         padding: 0 16px; color: #1a1a1a; }
+  h1 { margin: 0 0 4px; }
+  h2 { margin-top: 32px; }
+  .sub { color: #666; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+  th, td { padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+  th { background: #f5f5f5; }
+  input[type=text], input[type=datetime-local], textarea {
+    width: 100%; padding: 4px 8px; font-size: 14px; box-sizing: border-box; }
+  button { cursor: pointer; padding: 4px 12px; }
+  .danger { color: #b00; }
+  .empty { color: #888; padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>ECHO SCOPE — admin</h1>
+<p class="sub">Projects appear on the idle dashboard; sessions populate the "Upcoming Session" card.</p>
+
+<h2>Projects</h2>
+<table id="projects-table">
+  <thead><tr><th>#</th><th>Title</th><th>Description</th><th>Order</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<form id="add-project">
+  <table><tr>
+    <td><input type="text" name="title" placeholder="Title" required></td>
+    <td><input type="text" name="description" placeholder="Description"></td>
+    <td style="width:80px"><input type="text" name="ordering" placeholder="Order" value="0"></td>
+    <td><button type="submit">Add</button></td>
+  </tr></table>
+</form>
+
+<h2>Sessions</h2>
+<table id="sessions-table">
+  <thead><tr><th>#</th><th>Title</th><th>Starts</th><th>Ends</th><th>Notes</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<form id="add-session">
+  <table><tr>
+    <td><input type="text" name="title" placeholder="Title" required></td>
+    <td><input type="datetime-local" name="starts_at" required></td>
+    <td><input type="datetime-local" name="ends_at"></td>
+    <td><input type="text" name="notes" placeholder="Notes"></td>
+    <td><button type="submit">Add</button></td>
+  </tr></table>
+</form>
+
+<script>
+async function refresh() {
+  const projects = await fetch("/api/projects").then(r => r.json());
+  const ptb = document.querySelector("#projects-table tbody");
+  ptb.innerHTML = "";
+  for (const p of projects) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${p.id}</td><td>${escape(p.title)}</td>
+      <td>${escape(p.description || "")}</td><td>${p.ordering}</td>
+      <td><button onclick="del('projects', ${p.id})" class="danger">Delete</button></td>`;
+    ptb.appendChild(tr);
+  }
+  const sessions = await fetch("/api/sessions").then(r => r.json());
+  const stb = document.querySelector("#sessions-table tbody");
+  stb.innerHTML = "";
+  for (const s of sessions) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${s.id}</td><td>${escape(s.title)}</td>
+      <td>${escape(s.starts_at)}</td><td>${escape(s.ends_at || "")}</td>
+      <td>${escape(s.notes || "")}</td>
+      <td><button onclick="del('sessions', ${s.id})" class="danger">Delete</button></td>`;
+    stb.appendChild(tr);
+  }
+}
+function escape(s) {
+  return String(s).replace(/[&<>"]/g, c =>
+    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+}
+async function del(kind, id) {
+  if (!confirm("Delete?")) return;
+  await fetch(`/api/${kind}/${id}`, { method: "DELETE" });
+  refresh();
+}
+document.getElementById("add-project").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  await fetch("/api/projects", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: f.title.value, description: f.description.value,
+      ordering: parseInt(f.ordering.value || "0", 10),
+    }),
+  });
+  f.reset(); refresh();
+});
+document.getElementById("add-session").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  await fetch("/api/sessions", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: f.title.value,
+      starts_at: f.starts_at.value.replace("T", " ") + ":00",
+      ends_at: f.ends_at.value ? f.ends_at.value.replace("T", " ") + ":00" : null,
+      notes: f.notes.value,
+    }),
+  });
+  f.reset(); refresh();
+});
+refresh();
+</script>
+</body>
+</html>
