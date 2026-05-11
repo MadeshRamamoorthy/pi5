@@ -231,7 +231,8 @@ CHAT_VOICE_SILENCE_RMS = 350        # int16 RMS threshold below which audio
 # more robust over time. Rate-limited and capped so the DB doesn't grow
 # unbounded.
 SILENT_LEARN_ENABLED = True
-SILENT_LEARN_MIN_SCORE = 0.55          # only learn when match is comfortable
+SILENT_LEARN_MIN_SCORE = 0.70          # only learn from very confident matches
+SILENT_LEARN_MIN_MARGIN = 0.15         # best score must beat runner-up by this much
 SILENT_LEARN_MAX_SIMILARITY = 0.92     # skip if new sample is ~ a duplicate of an existing one
 SILENT_LEARN_MIN_INTERVAL_SEC = 60     # at most one new sample per person per minute
 SILENT_LEARN_MAX_SAMPLES_PER_PERSON = 30  # cap; oldest non-enrolment samples drop first

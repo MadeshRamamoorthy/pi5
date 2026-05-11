@@ -334,8 +334,8 @@ body { display: flex; align-items: center; justify-content: center; }
 }
 
 .camera-frame {
-  width: 600px;
-  height: 440px;
+  width: 720px;
+  height: 480px;
   border-width: 4px !important;
   position: relative;
   overflow: hidden;
@@ -345,14 +345,26 @@ body { display: flex; align-items: center; justify-content: center; }
   flex-shrink: 0;
 }
 
-.chat-panel {
-  width: 540px;
-  height: 440px;
+/* The transcript panel is hidden by default. Only visible while chat
+   is in play -- listening, awaiting reply, or with non-empty history.
+   In chat mode the camera shrinks to make room. */
+.chat-panel { display: none; }
+
+body[data-chat-mode="true"] .chat-panel {
   display: flex;
   flex-direction: column;
+  width: 540px;
+  height: 480px;
   padding: 16px 18px;
   flex-shrink: 0;
 }
+body[data-chat-mode="true"] .camera-frame {
+  width: 600px;
+  height: 480px;
+}
+/* Hide the fun-fact strip while chatting -- the conversation gets the
+   full attention. */
+body[data-chat-mode="true"] .fun-fact { display: none; }
 .chat-panel .card-title {
   margin-bottom: 10px;
 }

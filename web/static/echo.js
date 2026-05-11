@@ -107,6 +107,19 @@
       bind("chat-remaining-label",
            n != null ? `${n} question${n === 1 ? "" : "s"} left` : "");
     }
+    refreshChatMode();
+  }
+
+  // Show the chat panel only when chat is actually in play. Default
+  // active view is camera + fun-fact + listen pill, just like the
+  // pre-transcript layout.
+  function refreshChatMode() {
+    const inChat = !!(
+      state.listening ||
+      state.chat_pending ||
+      (Array.isArray(state.chat_history) && state.chat_history.length > 0)
+    );
+    document.body.dataset.chatMode = inChat ? "true" : "false";
   }
 
   function bind(name, value) {

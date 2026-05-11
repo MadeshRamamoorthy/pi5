@@ -47,11 +47,17 @@ from web import create_app
 
 
 def cosine_match(query: np.ndarray, matrix: np.ndarray):
+    """Return (best_idx, best_score, second_best_score). When fewer
+    than two embeddings exist, second_best is -1.0 so margin checks
+    against it always pass."""
     if matrix.shape[0] == 0:
-        return -1, 0.0
+        return -1, 0.0, -1.0
     sims = matrix @ query
-    idx = int(np.argmax(sims))
-    return idx, float(sims[idx])
+    order = np.argsort(sims)[::-1]
+    best_idx = int(order[0])
+    best = float(sims[best_idx])
+    second = float(sims[order[1]]) if order.size > 1 else -1.0
+    return best_idx, best, second
 
 
 def best_self_match(embeddings, db_ids, db_matrix, emp_id) -> float:
@@ -68,6 +74,32 @@ def largest_detection(dets):
     return max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
 
 
+def _draw_overlays(frame, face_labels):
+    """Annotate `frame` in-place with rectangles + name labels.
+
+    face_labels: list of (det, label_text, bgr_color) tuples produced
+    by the recognition loop. Drawing happens server-side -- the
+    browser just decodes the resulting JPEG -- so the user gets the
+    "boxes around faces" visual that the cv2 build had, without
+    spending bandwidth on per-detection JSON pushes."""
+    import cv2
+    for det, text, color in face_labels:
+        x1, y1, x2, y2 = (int(v) for v in det.bbox)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        if not text:
+            continue
+        (tw, th), _bl = cv2.getTextSize(
+            text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1,
+        )
+        # Label background bar just above the box.
+        ly2 = max(0, y1 - th - 10)
+        cv2.rectangle(frame, (x1, ly2), (x1 + tw + 12, y1), color, -1)
+        cv2.putText(
+            frame, text, (x1 + 6, y1 - 6),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA,
+        )
+
+
 # ---------- silent learning -----------------------------------------------
 
 
@@ -76,10 +108,18 @@ class SilentLearner:
         self.db = db
         self._last_added: dict[str, float] = {}
 
-    def maybe_add(self, emp_id, name, embedding, score) -> bool:
+    def maybe_add(self, emp_id, name, embedding, score,
+                  runner_up: float = -1.0) -> bool:
         if not config.SILENT_LEARN_ENABLED:
             return False
         if score < config.SILENT_LEARN_MIN_SCORE:
+            return False
+        # The classic drift trap: two similar-looking faces both score
+        # 0.65-ish against the same person. Both look "comfortable" in
+        # isolation, but the small margin says the model isn't actually
+        # sure which one this is. Refuse to learn when the runner-up is
+        # too close.
+        if runner_up >= 0.0 and (score - runner_up) < config.SILENT_LEARN_MIN_MARGIN:
             return False
         now = time.time()
         if now - self._last_added.get(emp_id, 0) < config.SILENT_LEARN_MIN_INTERVAL_SEC:
@@ -220,8 +260,12 @@ class CameraWorker(threading.Thread):
 
         while not self._stop.is_set():
             frame = grab_frame(self.cam)
-            self.frames.push(frame)
             self.state.set_now()
+            # Detection overlays are drawn onto `frame` further down,
+            # then we push to MJPEG. While IDLE we push immediately so
+            # the dashboard's (unused) camera socket stays warm.
+            if kiosk_state == "IDLE":
+                self.frames.push(frame)
 
             # ---- IDLE -> ACTIVE on wake word OR touch -------
             if kiosk_state == "IDLE" and self.wake_event.is_set():
@@ -302,6 +346,8 @@ class CameraWorker(threading.Thread):
             dets = self.pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
                                     config.DETECTOR_NMS_IOU)
             biggest = largest_detection(dets)
+            # label entries: (det, text, color_bgr)
+            face_labels: list[tuple] = []
 
             if kiosk_state == "ACTIVE":
                 biggest_is_live = self.liveness.update(frame, biggest)
@@ -309,25 +355,42 @@ class CameraWorker(threading.Thread):
                 for i, det in enumerate(dets):
                     ok, _ = is_quality_face(det, frame.shape)
                     if not ok:
+                        face_labels.append((det, "low quality", (0, 165, 255)))
                         continue
                     if det is biggest:
                         if not biggest_is_live:
+                            face_labels.append((det, "checking liveness…", (0, 200, 255)))
                             continue
                     else:
                         sf_ok, _ = LivenessChecker.single_frame_check(frame, det)
                         if not sf_ok:
+                            face_labels.append((det, "checking liveness…", (0, 200, 255)))
                             continue
                     aligned = align_face(frame, det.landmarks)
                     emb = self.pipe.embed(aligned)
-                    idx, score = cosine_match(emb, matrix)
+                    idx, score, runner_up = cosine_match(emb, matrix)
                     if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
-                        if self.learner.maybe_add(emp_ids[idx], names[idx], emb, score):
+                        if self.learner.maybe_add(
+                            emp_ids[idx], names[idx], emb, score, runner_up,
+                        ):
                             emp_ids, names, matrix = self.db.load_all()
-                        pending_greets.append((emp_ids[idx], names[idx]))
-                    elif det is biggest:
-                        biggest_quality_unknown = True
+                        pending_greets.append(
+                            (emp_ids[idx], names[idx], det, score)
+                        )
+                        face_labels.append((
+                            det, f"{names[idx]}  {score:.2f}", (0, 255, 0),
+                        ))
+                    else:
+                        face_labels.append((det, "Unknown", (0, 255, 255)))
+                        if det is biggest:
+                            biggest_quality_unknown = True
 
-                for emp_id, name in pending_greets:
+            # Draw boxes + names on the frame, then publish to MJPEG.
+            if kiosk_state == "ACTIVE":
+                _draw_overlays(frame, face_labels)
+                self.frames.push(frame)
+
+                for emp_id, name, _det, _score in pending_greets:
                     if self.greeter.greet(emp_id, name):
                         last_interaction_at = time.time()
                         if emp_id not in seen_in_session:
