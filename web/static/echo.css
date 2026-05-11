@@ -152,8 +152,14 @@ a:hover { text-decoration: underline; }
   gap: 22px;
 }
 .weather-icon { font-size: 56px; }
-.weather-text { display: flex; flex-direction: column; gap: 8px; }
+.weather-text { display: flex; flex-direction: column; gap: 4px; }
 .weather-text .temp { font-size: 38px; font-weight: 700; }
+.weather-text .city {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
 .weather-text .humidity {
   color: var(--text-dim);
   font-size: 16px;
@@ -198,6 +204,8 @@ footer {
   font-size: 16px;
 }
 footer .q { color: var(--danger); }
+footer .admin-link { opacity: 0.55; font-size: 13px; }
+footer .admin-link a { color: var(--text-dim); }
 
 .placeholder { color: var(--text-dim); }
 
@@ -460,11 +468,63 @@ body[data-listening="true"] .listening-pill .live-dot {
   cursor: pointer;
 }
 
-/* ---------- responsive: tighter on small screens ---------- */
+/* ---------- responsive: 10.1" kiosk panels (1280x800, 1024x600) ---------- */
 
-@media (max-width: 1024px) {
-  .screen { padding: 22px 28px; gap: 14px; }
-  .wake-banner { font-size: 22px; padding: 20px; }
-  .weather-text .temp { font-size: 32px; }
-  .projects ul { grid-template-columns: 1fr; }
+/* Mid-size: most 10.1" panels (1280x800). */
+@media (max-width: 1366px), (max-height: 820px) {
+  .screen { padding: 18px 24px; gap: 12px; }
+  .dashboard-header .logo .wave { font-size: 26px; }
+  .dashboard-header .logo .brand { font-size: 22px; }
+  .clock { font-size: 14px; }
+  .wake-banner { font-size: 20px; padding: 16px; }
+  .wake-banner .mic-icon { width: 28px; height: 28px; font-size: 14px; margin-right: 10px; }
+  .weather { gap: 14px; padding: 14px 18px; }
+  .weather-icon { font-size: 40px; }
+  .weather-text .temp { font-size: 26px; }
+  .weather-text .city { font-size: 13px; }
+  .weather-text .humidity { font-size: 13px; }
+  .hi5 { padding: 14px 18px; }
+  .hi5 h3 { font-size: 17px; }
+  .hi5 p { font-size: 13px; margin: 2px 0; }
+  .card { padding: 14px 18px; }
+  .card h2 { font-size: 13px; }
+  .projects ul { gap: 4px 18px; }
+  .projects li { font-size: 14px; padding: 4px 0 4px 18px; }
+  .projects li::before { width: 6px; height: 6px; top: 10px; }
+  .session h3 { font-size: 18px; }
+  .session p { font-size: 14px; }
+  footer { font-size: 13px; }
+
+  /* Active screen tightening */
+  .active-header .brand { font-size: 17px; }
+  .status-strip { gap: 14px; font-size: 13px; }
+  .close-x { width: 30px; height: 30px; font-size: 14px; }
+  .camera-viewport .corner { width: 44px; height: 44px; }
+  .fun-fact { margin-bottom: 64px; padding: 14px 18px; }
+  .fun-fact h3 { font-size: 14px; }
+  .fun-fact p { font-size: 14px; }
+  .listening-pill { bottom: 16px; padding: 10px 22px; font-size: 16px; }
+}
+
+/* Tight: 7"-10.1" panels around 1024x600 / 1280x720. */
+@media (max-width: 1100px), (max-height: 720px) {
+  .screen { padding: 12px 16px; gap: 8px; }
+  .dashboard-header .logo .brand { font-size: 18px; }
+  .dashboard-header .logo .wave { font-size: 20px; }
+  .clock { font-size: 12px; }
+  .wake-banner { font-size: 16px; padding: 10px 14px; }
+  .wake-banner .mic-icon { width: 22px; height: 22px; font-size: 12px; }
+  .weather-icon { font-size: 32px; }
+  .weather-text .temp { font-size: 22px; }
+  .hi5 h3 { font-size: 15px; }
+  .card { padding: 10px 14px; }
+  .card h2 { font-size: 12px; }
+  .projects ul { grid-template-columns: 1fr; gap: 2px; }
+  .projects li { font-size: 13px; padding: 3px 0 3px 16px; }
+  .session h3 { font-size: 15px; }
+  .session p { font-size: 13px; }
+  footer { font-size: 12px; }
+  .listening-pill { font-size: 14px; padding: 8px 18px; bottom: 12px; }
+  .fun-fact { margin-bottom: 56px; }
+  .camera-viewport .corner { width: 32px; height: 32px; }
 }

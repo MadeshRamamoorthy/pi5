@@ -134,7 +134,11 @@ AUDIO_OUTPUT_DEVICE: str | None = os.environ.get("AUDIO_OUTPUT_DEVICE") or None
 # ---- Wake-word / activation -----------------------------------------------
 BRAND_NAME = "ECHO SCOPE"
 CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
-WAKE_WORD = "hello echo scope"    # phrase that activates recognition
+WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
+# Aliases also accepted by the wake-word grammar. The small Vosk model
+# is more reliable on shorter phrases, so keeping "hello echo" alive as
+# a fallback helps when users speak quickly or trail off.
+WAKE_WORD_ALIASES = ["hello echo", "echo scope", "hey echo"]
 WAKE_WORD_SAMPLERATE = 16000
 WAKE_WORD_BLOCKSIZE = 8000
 # Drop back to IDLE this long after the last *interaction* (a new person

@@ -106,12 +106,14 @@
       bind("weather-temp", "—");
       bind("weather-temp-short", "—");
       bind("weather-humidity", "—");
+      bind("weather-city", "—");
       return;
     }
     bind("weather-icon", WEATHER_ICONS[w.label] || "🌡️");
     bind("weather-temp", `${Math.round(w.temp_c)}°C`);
     bind("weather-temp-short", `${Math.round(w.temp_c)}°C`);
     bind("weather-humidity", w.humidity != null ? `${w.humidity}%` : "—");
+    bind("weather-city", w.city || w.label || "—");
   }
 
   // ---- metrics (hi-5s)

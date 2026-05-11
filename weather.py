@@ -142,16 +142,32 @@ class WeatherPoller:
                     "latitude": lat,
                     "longitude": lon,
                     "current_weather": "true",
+                    "hourly": "relative_humidity_2m",
                 },
                 timeout=5,
             )
             r.raise_for_status()
-            cw = r.json()["current_weather"]
+            data = r.json()
+            cw = data["current_weather"]
+            # Snap the humidity reading to the current_weather.time row
+            # (open-meteo's hourly array is aligned by index).
+            humidity = None
+            try:
+                times = data["hourly"]["time"]
+                hums = data["hourly"]["relative_humidity_2m"]
+                tnow = cw.get("time")
+                if tnow in times:
+                    humidity = int(hums[times.index(tnow)])
+                else:
+                    humidity = int(hums[-1])
+            except Exception:
+                pass
             with self._lock:
                 self._state.update({
                     "ok": True,
                     "temp_c": float(cw["temperature"]),
                     "label": describe_weather_code(cw["weathercode"]),
+                    "humidity": humidity,
                     "fetched_at": time.time(),
                     "error": None,
                 })

@@ -68,6 +68,11 @@ class WakeWordListener:
             )
 
         self.keyword = keyword.strip().lower()
+        # Accept the primary phrase plus any aliases from config.
+        import config as _cfg
+        aliases = [a.strip().lower() for a in
+                   getattr(_cfg, "WAKE_WORD_ALIASES", []) if a]
+        self._phrases = [self.keyword] + [a for a in aliases if a != self.keyword]
         self.target_rate = samplerate
         self._on_partial = on_partial
         self._on_final = on_final
@@ -77,7 +82,7 @@ class WakeWordListener:
         except Exception as exc:  # noqa: BLE001
             raise WakeWordError(f"could not query input device: {exc}")
 
-        grammar = json.dumps([self.keyword, "[unk]"])
+        grammar = json.dumps(self._phrases + ["[unk]"])
         self._model = vosk.Model(str(model_dir))
         self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate, grammar)
         self._paused = threading.Event()
@@ -187,11 +192,13 @@ class WakeWordListener:
             # "[unk]") tend to lock onto the wake phrase before the audio
             # has settled, producing false positives on ambient speech.
             #
-            # Match the *whole* utterance (or the keyword followed by
-            # filler tokens). A bare substring check would accept any
-            # sentence happening to contain the wake phrase.
-            if text == self.keyword or text.startswith(self.keyword + " "):
-                self._activated.set()
+            # Match if the utterance IS one of our wake phrases (or
+            # starts with one followed by filler). A bare substring
+            # match would accept any sentence containing "hello echo".
+            for phrase in self._phrases:
+                if text == phrase or text.startswith(phrase + " "):
+                    self._activated.set()
+                    break
         else:
             text = json.loads(self._recognizer.PartialResult()).get("partial", "")
             if text and self._on_partial:
