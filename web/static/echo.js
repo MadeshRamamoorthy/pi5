@@ -299,8 +299,10 @@
 
   document.getElementById("close-active").addEventListener("click", (ev) => {
     ev.stopPropagation();
-    // Optimistically flip locally; the backend's idle timeout sends
-    // an authoritative state update soon after.
+    // Tell the backend to drop to IDLE (clears chat history, resumes
+    // wake-word listener, etc.). We also flip locally for an instant
+    // visual response while the SSE state push catches up.
+    post("/api/idle");
     document.body.dataset.state = "IDLE";
     $("#idle").hidden   = false;
     $("#active").hidden = true;

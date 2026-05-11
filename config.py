@@ -238,6 +238,11 @@ SILENT_LEARN_MIN_INTERVAL_SEC = 60     # at most one new sample per person per m
 SILENT_LEARN_MAX_SAMPLES_PER_PERSON = 30  # cap; oldest non-enrolment samples drop first
 
 # ---- Liveness (passive anti-spoofing) -------------------------------------
+# Master switch. When False, every face is treated as live -- no motion /
+# jitter / texture / specular checks run. Useful when the kiosk lives in
+# a controlled space (e.g. a private office) and the anti-spoofing is
+# more friction than protection.
+LIVENESS_ENABLED = False
 # Sliding window length over which we compute liveness signals.
 LIVENESS_WINDOW_FRAMES = 24
 # Min per-frame face crop size used by the pixel-jitter check.

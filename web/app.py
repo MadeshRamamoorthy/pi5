@@ -20,6 +20,7 @@ def create_app(
     frames,                       # FrameStreamer
     db,                           # FaceDB
     request_wake: Callable[[], None],
+    request_idle: Callable[[], None],
     request_register: Callable[[dict], None],
     request_register_photo: Callable[[dict], None],
     request_register_skip: Callable[[], None],
@@ -87,6 +88,14 @@ def create_app(
     @app.route("/api/wake", methods=["POST"])
     def api_wake():
         request_wake()
+        return ("", 204)
+
+    @app.route("/api/idle", methods=["POST"])
+    def api_idle():
+        """User tapped the close (X) button on the camera screen. Force
+        the kiosk back to IDLE immediately rather than waiting for the
+        idle timeout."""
+        request_idle()
         return ("", 204)
 
     @app.route("/api/listen/start", methods=["POST"])

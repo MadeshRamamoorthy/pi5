@@ -207,7 +207,7 @@ class CameraWorker(threading.Thread):
 
     def __init__(self, db, state, frames, tts, chat, greeter, learner,
                  register_queue, photo_register_queue, chat_queue, wake_event,
-                 args, listener=None):
+                 idle_event, args, listener=None):
         super().__init__(name="camera-worker")
         self.db = db
         self.state = state
@@ -220,6 +220,7 @@ class CameraWorker(threading.Thread):
         self.photo_register_q = photo_register_queue
         self.chat_q = chat_queue
         self.wake_event = wake_event
+        self.idle_event = idle_event
         self.listener = listener
         self.args = args
         self.cam = None
@@ -350,22 +351,31 @@ class CameraWorker(threading.Thread):
             face_labels: list[tuple] = []
 
             if kiosk_state == "ACTIVE":
-                biggest_is_live = self.liveness.update(frame, biggest)
+                # Liveness can be turned off entirely via config; when
+                # disabled we treat every quality face as live and skip
+                # both the sliding-window analysis and the per-face
+                # single-frame check.
+                liveness_on = getattr(config, "LIVENESS_ENABLED", True)
+                biggest_is_live = (
+                    self.liveness.update(frame, biggest)
+                    if liveness_on else True
+                )
                 pending_greets = []
                 for i, det in enumerate(dets):
                     ok, _ = is_quality_face(det, frame.shape)
                     if not ok:
                         face_labels.append((det, "low quality", (0, 165, 255)))
                         continue
-                    if det is biggest:
-                        if not biggest_is_live:
-                            face_labels.append((det, "checking liveness…", (0, 200, 255)))
-                            continue
-                    else:
-                        sf_ok, _ = LivenessChecker.single_frame_check(frame, det)
-                        if not sf_ok:
-                            face_labels.append((det, "checking liveness…", (0, 200, 255)))
-                            continue
+                    if liveness_on:
+                        if det is biggest:
+                            if not biggest_is_live:
+                                face_labels.append((det, "checking liveness…", (0, 200, 255)))
+                                continue
+                        else:
+                            sf_ok, _ = LivenessChecker.single_frame_check(frame, det)
+                            if not sf_ok:
+                                face_labels.append((det, "checking liveness…", (0, 200, 255)))
+                                continue
                     aligned = align_face(frame, det.landmarks)
                     emb = self.pipe.embed(aligned)
                     idx, score, runner_up = cosine_match(emb, matrix)
@@ -447,17 +457,23 @@ class CameraWorker(threading.Thread):
                 if user_engaged:
                     last_interaction_at = time.time()
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
-                if (idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
+                force_idle = self.idle_event.is_set()
+                if (force_idle
+                        or idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
                         or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)):
+                    if force_idle:
+                        self.idle_event.clear()
                     kiosk_state = "IDLE"
                     self.liveness.reset()
                     self.greeter.reset_last()
+                    self.tts.flush()
                     self.state.go_idle()
                     # Resume the wake-word listener -- the user is gone,
                     # we need to be listening for the next "hello echo".
                     if self.listener is not None:
                         self.listener.resume()
-                    print(f"[state] ACTIVE -> IDLE (idle {idle_for:.0f}s, "
+                    reason = "user closed" if force_idle else f"idle {idle_for:.0f}s"
+                    print(f"[state] ACTIVE -> IDLE ({reason}, "
                           f"interactions={len(seen_in_session)})")
 
                 # Poll the chat future.
@@ -782,6 +798,7 @@ def main():
     frames = FrameStreamer()
 
     wake_event = threading.Event()
+    idle_event = threading.Event()
     register_q: queue.Queue = queue.Queue()
     photo_register_q: queue.Queue = queue.Queue()
     chat_q: queue.Queue = queue.Queue()
@@ -835,12 +852,15 @@ def main():
     # Worker thread.
     worker = CameraWorker(db, state, frames, tts, chat, greeter, learner,
                           register_q, photo_register_q, chat_q,
-                          wake_event, args, listener=listener)
+                          wake_event, idle_event, args, listener=listener)
     worker.start()
 
     # Flask app -- callbacks bridge the browser to the worker.
     def request_wake():
         wake_event.set()
+
+    def request_idle():
+        idle_event.set()
 
     def request_register(payload):
         register_q.put(payload)
@@ -866,6 +886,7 @@ def main():
 
     app = create_app(state, frames, db,
                      request_wake=request_wake,
+                     request_idle=request_idle,
                      request_register=request_register,
                      request_register_photo=request_register_photo,
                      request_register_skip=request_register_skip,
