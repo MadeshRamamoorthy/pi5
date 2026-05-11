@@ -102,6 +102,11 @@
     if ("register_message" in diff) bind("register-message", diff.register_message);
     if ("register_pose" in diff)    renderRegisterPose(diff.register_pose);
     if ("chat_history" in diff)     renderChatLog(diff.chat_history);
+    if ("chat_remaining" in diff) {
+      const n = diff.chat_remaining;
+      bind("chat-remaining-label",
+           n != null ? `${n} question${n === 1 ? "" : "s"} left` : "");
+    }
   }
 
   function bind(name, value) {
@@ -255,6 +260,14 @@
     const box = $("#chat-log");
     if (!box || !Array.isArray(history)) return;
     box.innerHTML = "";
+    if (!history.length) {
+      const empty = document.createElement("div");
+      empty.className = "chat-empty";
+      empty.textContent = "Tap the mic below to ask a question. " +
+                          "Your conversation will appear here.";
+      box.appendChild(empty);
+      return;
+    }
     for (const [role, text] of history) {
       const row = document.createElement("div");
       row.className = "row " + role;
@@ -300,10 +313,6 @@
       postJSON("/api/chat", { question: q });
     });
   }
-  $("#chat-close")?.addEventListener("click", () => {
-    $("#chat-overlay").hidden = true;
-  });
-
   $("#register-form")?.addEventListener("submit", (ev) => {
     ev.preventDefault();
     const emp_id = $("#register-emp-id").value.trim();

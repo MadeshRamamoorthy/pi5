@@ -149,7 +149,7 @@ IDLE_AFTER_LAST_INTERACTION_SEC = 30
 # While there's chat activity, keep the kiosk in ACTIVE mode for at
 # least this long after the last chat message. Gives the user time to
 # read the answer and ask a follow-up without the kiosk dropping out.
-CHAT_KEEPALIVE_SEC = 120
+CHAT_KEEPALIVE_SEC = 180
 # After the user taps "No thanks" on the auto-register prompt, don't
 # re-open it for this many seconds even if their face is still unknown.
 REGISTER_DECLINE_COOLDOWN_SEC = 120

@@ -140,19 +140,51 @@
 
     <div class="active-body">
 
-      <div class="camera-frame glass">
-        <span class="corner tl"></span>
-        <span class="corner tr"></span>
-        <span class="corner bl"></span>
-        <span class="corner br"></span>
-        <span class="scan-line" aria-hidden="true"></span>
-        <img id="camera-stream" alt="" />
-        <div class="camera-placeholder">
-          <svg viewBox="0 0 64 64" width="64" height="64" fill="none" stroke="#00D4FF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M23 19l-2 4H8a3 3 0 0 0-3 3v26a3 3 0 0 0 3 3h48a3 3 0 0 0 3-3V26a3 3 0 0 0-3-3H43l-2-4h-18z"/>
-            <circle cx="32" cy="37" r="11"/>
-          </svg>
-          <div class="cam-status">Camera: Active</div>
+      <div class="active-main">
+        <div class="camera-frame glass">
+          <span class="corner tl"></span>
+          <span class="corner tr"></span>
+          <span class="corner bl"></span>
+          <span class="corner br"></span>
+          <span class="scan-line" aria-hidden="true"></span>
+          <img id="camera-stream" alt="" />
+          <div class="camera-placeholder">
+            <svg viewBox="0 0 64 64" width="64" height="64" fill="none" stroke="#00D4FF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M23 19l-2 4H8a3 3 0 0 0-3 3v26a3 3 0 0 0 3 3h48a3 3 0 0 0 3-3V26a3 3 0 0 0-3-3H43l-2-4h-18z"/>
+              <circle cx="32" cy="37" r="11"/>
+            </svg>
+            <div class="cam-status">Camera: Active</div>
+          </div>
+        </div>
+
+        <!-- Chat transcript panel: lives on the right of the camera so
+             the user can see what's been asked / answered while still
+             seeing themselves in frame. Typing is optional -- voice is
+             the primary path -- but the input stays so a touchscreen
+             keyboard works for accessibility. -->
+        <div class="card glass chat-panel">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            <h3>CHAT</h3>
+            <span class="chat-remaining" data-bind="chat-remaining-label"></span>
+          </div>
+          <div class="chat-log" id="chat-log">
+            <div class="chat-empty">
+              Tap the mic below to ask a question.
+              Your conversation will appear here.
+            </div>
+          </div>
+          <form id="chat-form" class="chat-input">
+            <input type="text" id="chat-input" placeholder="Or type your question…" autocomplete="off">
+            <button type="submit" aria-label="Send">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#001a26" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2"  x2="11" y2="13"/>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </form>
         </div>
       </div>
 
@@ -170,9 +202,6 @@
         <span class="live-dot" aria-hidden="true"></span>
       </button>
 
-      <!-- Pose-capture progress, shown on the active screen during
-           registration rather than blocking the camera with the form
-           overlay. -->
       <div id="active-pose" class="card glass pose-card" hidden>
         <div class="card-title">
           <span class="fact-emoji">📸</span>
@@ -184,9 +213,7 @@
 
     </div>
 
-    <!-- Chat-mic overlay (pulsating, while chat-voice is recording).
-         Sits over the camera so the user knows the kiosk is listening
-         to them, not still doing recognition. -->
+    <!-- Chat-mic overlay (pulsating, while chat-voice is recording). -->
     <div id="listen-overlay" class="overlay listen-overlay" hidden>
       <div class="listen-stage">
         <div class="mic-rings" aria-hidden="true">
@@ -206,23 +233,6 @@
 
     <!-- Toast -->
     <div id="toast" class="toast" hidden></div>
-
-    <!-- Chat overlay (placeholder until styled later) -->
-    <div id="chat-overlay" class="overlay" hidden>
-      <div class="overlay-card glass">
-        <header>
-          <h2>💬 Chat</h2>
-          <button class="close-x" id="chat-close" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </header>
-        <div class="chat-log" id="chat-log"></div>
-        <form id="chat-form">
-          <input type="text" id="chat-input" placeholder="Ask anything…" autocomplete="off">
-          <button type="submit">Send</button>
-        </form>
-      </div>
-    </div>
 
     <!-- Registration overlay -->
     <div id="register-overlay" class="overlay" hidden>
