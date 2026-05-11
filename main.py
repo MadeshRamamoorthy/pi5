@@ -322,10 +322,24 @@ class CameraWorker(threading.Thread):
                     unknown_streak = 0
 
                 # Idle timeout (keep alive while user is engaged).
+                # "Engaged" includes:
+                #   - register overlay is open
+                #   - chat is waiting for a reply
+                #   - chat-voice mic is recording
+                #   - a chat exchange happened recently (chat_history
+                #     non-empty AND within CHAT_KEEPALIVE_SEC of last
+                #     chat activity) -- gives the user time to read
+                #     the answer and ask a follow-up.
+                chat_active = (
+                    snap.get("chat_pending")
+                    or bool(snap.get("chat_history"))
+                    and (time.time() - getattr(self, "_last_chat_at", 0))
+                        <= config.CHAT_KEEPALIVE_SEC
+                )
                 user_engaged = (
                     snap.get("register_open")
-                    or snap.get("chat_pending")
                     or snap.get("listening")
+                    or chat_active
                 )
                 if user_engaged:
                     last_interaction_at = time.time()
@@ -355,6 +369,7 @@ class CameraWorker(threading.Thread):
                     self.state.update(chat_pending=False)
                     self._append_chat("assistant", answer)
                     self.greeter.say(answer)
+                    self._last_chat_at = time.time()
                     last_interaction_at = time.time()
 
     # ---- registration flow (driven by /api/register) -----------------
@@ -514,6 +529,7 @@ class CameraWorker(threading.Thread):
             self.greeter.say(answer)
             return
         self.state.update(chat_pending=True)
+        self._last_chat_at = time.time()
         self._chat_future = self.chat.submit(emp_id, question)
 
     def _append_chat(self, role: str, text: str):

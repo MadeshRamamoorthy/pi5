@@ -138,7 +138,9 @@ class StateBus:
             listening=False,
             register_open=False,
             chat_pending=False,
+            chat_history=[],
             person=None,
+            toast=None,
         )
 
     # ---- pub/sub -------------------------------------------------------

@@ -146,6 +146,10 @@ WAKE_WORD_BLOCKSIZE = 8000
 # recognised person who keeps standing in front of the camera does NOT
 # reset this timer -- 10 s after the last new event we sleep.
 IDLE_AFTER_LAST_INTERACTION_SEC = 30
+# While there's chat activity, keep the kiosk in ACTIVE mode for at
+# least this long after the last chat message. Gives the user time to
+# read the answer and ask a follow-up without the kiosk dropping out.
+CHAT_KEEPALIVE_SEC = 120
 # Backwards-compat alias used by older code paths.
 SLEEP_AFTER_NO_LIVE_FACE_SEC = IDLE_AFTER_LAST_INTERACTION_SEC
 # Hard back-stop on any single ACTIVE session.
