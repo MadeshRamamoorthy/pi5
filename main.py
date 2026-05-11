@@ -1,64 +1,46 @@
-"""Echo AI kiosk loop.
+"""ECHO SCOPE kiosk — orchestrator.
 
-State machine:
+Spawns the camera worker, the weather poller, the fun-fact rotator,
+the wake-word listener, the chat-voice capture, and the Flask app
+that serves the browser SPA. Each component talks through the
+StateBus, which Flask exposes to the browser over Server-Sent Events.
 
-  IDLE   --(wake word)-->  ACTIVE
-  ACTIVE --(30s no event)-> IDLE
-
-In ACTIVE state, the right half of the screen is a tabbed panel:
-  PROJECTS  (default)  - read-only list of projects from the DB.
-  REGISTER             - in-window text fields to enrol a new face.
-  CHAT                 - 5 questions per session, OpenAI w/ Ollama fallback.
-
-In IDLE the camera keeps capturing (and the recogniser keeps running so we
-can wake on faces if we ever want to), but the cv2 window shows the blue
-welcome screen with weather and counter instead.
-
-Press keys in the OpenCV window:
-  q         quit
-  P / R / C switch tab in ACTIVE
-  V         (in CHAT) toggle voice/keyboard input
-  Tab       (in REGISTER) switch between emp_id / name fields
-  Enter     submit current field / submit chat question
-  Esc       cancel current REGISTER / CHAT input
+There is no more cv2 window -- the UI is a Chromium kiosk pointed at
+http://127.0.0.1:8080. start.sh launches the browser after this
+process is up.
 """
 
 from __future__ import annotations
 
-# Suppress the harmless Qt font warning from opencv-python's bundled Qt
-# before cv2 is imported.
-import os
-os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
-
 import argparse
+import os
 import queue
+import random
+import threading
 import time
 import uuid
-from concurrent.futures import Future
 
-import cv2
 import numpy as np
 from picamera2 import Picamera2
 
 import config
-import views
+import messages
 from asr import make_chat_asr
 from async_tts import AsyncTTS
-from blink import BlinkChecker
 from chat import ChatBackendError, ChatBudgetError, ChatClient
 from chat_voice import ChatVoiceCapture, ChatVoiceCaptureError
 from database import FaceDB
+from frame_streamer import FrameStreamer
+from fun_facts import FunFactRotator
 from hailo_infer import HailoFacePipeline, align_face
 from liveness import LivenessChecker
-from quality import (
-    is_quality_face,
-    landmark_anchor,
-    landmarks_drift,
-    shift_matches_direction,
-)
+from quality import (is_quality_face, landmark_anchor, landmarks_drift,
+                     shift_matches_direction)
+from state import StateBus
 from tts import make_backend
 from wake_word import WakeWordError, WakeWordListener
 from weather import WeatherPoller
+from web import create_app
 
 
 # ---------- helpers --------------------------------------------------------
@@ -86,7 +68,7 @@ def largest_detection(dets):
     return max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
 
 
-# ---------- silent learning ------------------------------------------------
+# ---------- silent learning -----------------------------------------------
 
 
 class SilentLearner:
@@ -94,8 +76,7 @@ class SilentLearner:
         self.db = db
         self._last_added: dict[str, float] = {}
 
-    def maybe_add(self, emp_id: str, name: str,
-                  embedding: np.ndarray, score: float) -> bool:
+    def maybe_add(self, emp_id, name, embedding, score) -> bool:
         if not config.SILENT_LEARN_ENABLED:
             return False
         if score < config.SILENT_LEARN_MIN_SCORE:
@@ -111,20 +92,21 @@ class SilentLearner:
         self.db.add_embedding(emp_id, embedding)
         self._last_added[emp_id] = now
         cap = config.SILENT_LEARN_MAX_SAMPLES_PER_PERSON
-        n = self.db.count_embeddings(emp_id)
-        if n > cap:
+        if self.db.count_embeddings(emp_id) > cap:
             self.db.trim_embeddings(emp_id, cap)
         return True
 
 
-# ---------- voice ----------------------------------------------------------
+# ---------- voice ---------------------------------------------------------
 
 
 class Greeter:
-    """Async-TTS-backed greeter with per-emp_id cooldown."""
+    """Async TTS-backed greeter with per-emp_id cooldown + a toast push
+    to the SPA so the user can see who was greeted."""
 
-    def __init__(self, async_tts: AsyncTTS):
-        self._tts = async_tts
+    def __init__(self, tts: AsyncTTS, state: StateBus):
+        self._tts = tts
+        self._state = state
         self._last_greeted: dict[str, float] = {}
 
     def greet(self, emp_id: str, name: str) -> bool:
@@ -132,20 +114,23 @@ class Greeter:
         if now - self._last_greeted.get(emp_id, 0.0) < config.GREET_COOLDOWN_SEC:
             return False
         self._last_greeted[emp_id] = now
-        msg = f"Hello {name}, welcome!"
+        msg = messages.random_recognized_greeting(name)
         print(f"[GREET] {msg}")
         self._tts.speak(msg)
+        self._state.update(person={"emp_id": emp_id, "name": name},
+                           toast={"text": msg, "since": time.time()})
         return True
 
     def say(self, text: str) -> None:
         print(f"[TTS] {text}")
         self._tts.speak(text)
+        self._state.update(toast={"text": text, "since": time.time()})
 
     def reset_last(self) -> None:
         self._last_greeted.clear()
 
 
-# ---------- camera ---------------------------------------------------------
+# ---------- camera --------------------------------------------------------
 
 
 def open_camera() -> Picamera2:
@@ -163,839 +148,570 @@ def grab_frame(cam: Picamera2) -> np.ndarray:
     return cam.capture_array()
 
 
-def resize_to_camera_pane(frame: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Letterbox the camera frame into a (width x height) pane."""
-    h, w = frame.shape[:2]
-    scale = min(width / w, height / h)
-    new_w, new_h = int(w * scale), int(h * scale)
-    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    canvas = np.zeros((height, width, 3), dtype=np.uint8)
-    x_off = (width - new_w) // 2
-    y_off = (height - new_h) // 2
-    canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
-    return canvas
+# ---------- camera worker thread ------------------------------------------
 
 
-# ---------- HUD draw on camera frame ---------------------------------------
+class CameraWorker(threading.Thread):
+    """Owns the camera, runs detection / recognition / registration, and
+    publishes the latest frame to FrameStreamer and state changes to
+    the StateBus."""
 
+    daemon = True
 
-def draw_face_overlays(frame: np.ndarray, dets, label_for) -> None:
-    for d in dets:
-        x1, y1, x2, y2 = (int(v) for v in d.bbox)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        label = label_for(d)
-        if label:
-            cv2.putText(frame, label, (x1, max(0, y1 - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-
-# ---------- right-panel state machine --------------------------------------
-
-
-class RightPanel:
-    """Tabbed right-side panel: PROJECTS / REGISTER / CHAT."""
-
-    def __init__(self, db: FaceDB, chat: ChatClient):
+    def __init__(self, db, state, frames, tts, chat, greeter, learner,
+                 register_queue, chat_queue, wake_event,
+                 args):
+        super().__init__(name="camera-worker")
         self.db = db
+        self.state = state
+        self.frames = frames
+        self.tts = tts
         self.chat = chat
-        self.tab = "PROJECTS"
-        self.projects: list = []
-        self.projects_loaded_at = 0.0
-        self.selected_idx = 0
-        self.scroll = 0
-        self.register_form = views.RegisterFormState()
-        self.register_message = ""
-        self.chat_history: list[tuple[str, str]] = []
-        self.chat_input_mode = config.CHAT_VOICE_MODE_DEFAULT
-        self.chat_partial = ""
-        self.chat_pending_future: Future | None = None
-        self.chat_pending_started_at = 0.0
-        self.chat_listening = False
+        self.greeter = greeter
+        self.learner = learner
+        self.register_q = register_queue
+        self.chat_q = chat_queue
+        self.wake_event = wake_event
+        self.args = args
+        self.cam = None
+        self.pipe = None
+        self.liveness = LivenessChecker()
+        self._stop = threading.Event()
 
-    # ---- session lifecycle --------------------------------------------
+    def stop(self):
+        self._stop.set()
 
-    def session_reset(self) -> None:
-        self.tab = "PROJECTS"
-        self.selected_idx = 0
-        self.scroll = 0
-        self.register_form = views.RegisterFormState()
-        self.register_message = ""
-        self.chat_history = []
-        self.chat_input_mode = config.CHAT_VOICE_MODE_DEFAULT
-        self.chat_partial = ""
-        self.chat_pending_future = None
-        self.chat_listening = False
+    # ---- the loop ----
 
-    def reload_projects(self) -> None:
-        self.projects = self.db.list_projects()
-        self.projects_loaded_at = time.time()
-
-    # ---- tab switching ------------------------------------------------
-
-    def set_tab(self, tab: str) -> None:
-        if tab not in ("PROJECTS", "REGISTER", "CHAT"):
-            return
-        if self.tab == "CHAT" and tab != "CHAT":
-            # Leaving chat -- the main loop will read self.chat_listening
-            # and call stop_chat_listening() to revert the recognizer.
-            self.chat_listening = False
-        self.tab = tab
-        if tab == "PROJECTS":
-            self.reload_projects()
-
-    # ---- rendering ----------------------------------------------------
-
-    def render(self, session_count: int) -> np.ndarray:
-        size = (config.PANEL_WIDTH, config.WINDOW_SIZE[1])
-        # Refresh project list every ~5 s so admin edits show up.
-        if (self.tab == "PROJECTS"
-                and time.time() - self.projects_loaded_at > 5):
-            self.reload_projects()
-
-        if self.tab == "PROJECTS":
-            return views.render_projects_panel(
-                self.projects, self.selected_idx, self.scroll,
-                session_count, size,
-            )
-        if self.tab == "REGISTER":
-            return views.render_register_panel(
-                self.register_form, self.register_message,
-                session_count, size,
-            )
-        if self.tab == "CHAT":
-            remaining = self.chat.budget.remaining(self._chat_emp_id)
-            partial = self.chat_partial
-            if self.chat_pending_future is not None:
-                dots = "." * (int(time.time() * 2) % 4)
-                partial = f"thinking{dots}"
-            elif self.chat_listening:
-                dots = "." * (int(time.time() * 2) % 4)
-                partial = f"listening{dots} (tap or press space to stop)"
-            return views.render_chat_panel(
-                self.chat_history, remaining, self.chat_input_mode,
-                partial, self.chat.status(),
-                session_count, size,
-            )
-        return views.render_projects_panel([], 0, 0, session_count, size)
-
-    # ---- mouse / touch input ------------------------------------------
-
-    def handle_click(self, x: int, y: int) -> dict:
-        """Click given in panel-local coordinates (origin top-left of the
-        right pane). Returns the same shape of dict as handle_key."""
-        out: dict = {}
-        # Tab strip is the top ~38 px of the panel.
-        if y < 38:
-            tabs = ["PROJECTS", "REGISTER", "CHAT"]
-            tab_w = config.PANEL_WIDTH // len(tabs)
-            idx = max(0, min(len(tabs) - 1, x // tab_w))
-            self.set_tab(tabs[idx])
-            out["activity"] = True
-            return out
-        # CHAT tab: clicks in the bottom input row.
-        # Mic / keyboard toggle button on the right ~60px.
-        # The rest of the input box toggles voice listening (in voice mode).
-        if self.tab == "CHAT" and y > config.WINDOW_SIZE[1] - 70:
-            out["activity"] = True
-            btn_left = config.PANEL_WIDTH - 12 - 60
-            if x >= btn_left:
-                # Toggle input mode and stop any in-flight listening.
-                self.chat_input_mode = (
-                    "keyboard" if self.chat_input_mode == "voice" else "voice"
-                )
-                self.chat_partial = ""
-                if self.chat_listening:
-                    out["stop_listening"] = True
-                return out
-            if self.chat_input_mode == "voice":
-                if self.chat_listening:
-                    out["stop_listening"] = True
-                else:
-                    out["start_listening"] = True
-        return out
-
-    # ---- keyboard input ----------------------------------------------
-
-    _chat_emp_id: str = "anon"
-
-    def set_chat_emp_id(self, emp_id: str) -> None:
-        self._chat_emp_id = emp_id
-
-    def handle_key(self, key: int) -> dict:
-        """Returns a dict describing side effects, e.g.
-        {"submit_register": True} or {"submit_chat": "..."} so the main
-        loop can run blocking flows (capture poses, show TTS replies)."""
-        out: dict = {}
-        if key == -1:
-            return out
-        # Tab switching with single keys (only when not focused on a text field)
-        if self.tab == "REGISTER":
-            return self._handle_key_register(key)
-        if self.tab == "CHAT":
-            return self._handle_key_chat(key)
-        # PROJECTS tab navigation.
-        if key == ord("p") or key == ord("P"):
-            self.set_tab("PROJECTS")
-        elif key == ord("r") or key == ord("R"):
-            self.set_tab("REGISTER")
-        elif key == ord("c") or key == ord("C"):
-            self.set_tab("CHAT")
-        elif key == 82:   # up arrow (linux)
-            self.selected_idx = max(0, self.selected_idx - 1)
-            if self.selected_idx < self.scroll:
-                self.scroll = self.selected_idx
-        elif key == 84:   # down arrow
-            self.selected_idx = min(len(self.projects) - 1,
-                                    self.selected_idx + 1)
-        return out
-
-    def _handle_key_register(self, key: int) -> dict:
-        out: dict = {}
-        f = self.register_form
-        if key == 27:           # Esc -> back to projects
-            self.set_tab("PROJECTS")
-            self.register_form = views.RegisterFormState()
-            self.register_message = ""
-            return out
-        if key == 9:            # Tab -> switch field
-            f.focused = "name" if f.focused == "emp_id" else "emp_id"
-            return out
-        if key in (10, 13):     # Enter -> submit
-            if not f.emp_id.strip():
-                self.register_message = "Please enter your Employee ID first."
-                return out
-            if not f.name.strip():
-                self.register_message = "Please enter your name to continue."
-                return out
-            out["submit_register"] = True
-            return out
-        if key == 8 or key == 127:  # Backspace
-            cur = getattr(f, f.focused)
-            setattr(f, f.focused, cur[:-1])
-            return out
-        if 32 <= key < 127:
-            cur = getattr(f, f.focused)
-            setattr(f, f.focused, cur + chr(key))
-        return out
-
-    def _handle_key_chat(self, key: int) -> dict:
-        out: dict = {}
-        if key == 27:           # Esc -> back to projects
-            self.set_tab("PROJECTS")
-            self.chat_partial = ""
-            out["stop_listening"] = True
-            return out
-        if key == ord("v") or key == ord("V"):
-            self.chat_input_mode = (
-                "keyboard" if self.chat_input_mode == "voice" else "voice"
-            )
-            self.chat_partial = ""
-            out["stop_listening"] = True
-            return out
-        if self.chat_input_mode == "voice":
-            # Space toggles voice listening on/off so the user can talk.
-            if key == ord(" "):
-                if self.chat_listening:
-                    out["stop_listening"] = True
-                else:
-                    out["start_listening"] = True
-            return out
-        # Keyboard mode below.
-        if key == 8 or key == 127:
-            self.chat_partial = self.chat_partial[:-1]
-            return out
-        if key in (10, 13):
-            q = self.chat_partial.strip()
-            if q:
-                out["submit_chat"] = q
-                self.chat_partial = ""
-            return out
-        if 32 <= key < 127:
-            self.chat_partial += chr(key)
-        return out
-
-
-# ---------- voice-guided pose capture -------------------------------------
-
-
-def capture_with_prompts(
-    cam: Picamera2, pipe: HailoFacePipeline, greeter: Greeter,
-    tts: AsyncTTS, render_frame=None,
-) -> list[np.ndarray]:
-    """If render_frame is given, it's called every iteration with
-    (frame, det_or_None, prompt_str, pose_idx, total_poses, status_str).
-    The callback is responsible for drawing to the cv2 window and
-    handling waitKey -- that keeps the kiosk display responsive while
-    pose capture runs."""
-    embeddings: list[np.ndarray] = []
-    prompts = config.POSE_PROMPTS
-    baseline_anchor = None
-    baseline_eye_dist = 1.0
-
-    for i, (prompt, direction) in enumerate(prompts, start=1):
-        greeter.say(prompt)
-        # Wait for the prompt to finish playing before we start watching
-        # for the user's pose change. Render every frame while waiting so
-        # the camera preview keeps updating during the audio.
-        wait_deadline = time.time() + 8
-        while not tts.wait_idle(timeout=0.05) and time.time() < wait_deadline:
-            if render_frame is not None:
-                render_frame(grab_frame(cam), None, prompt, i, len(prompts),
-                             "speaking...")
-        hold_until = time.time() + config.POSE_HOLD_SEC
-        deadline = time.time() + config.POSE_HOLD_SEC + config.POSE_CAPTURE_TIMEOUT_SEC
-        stable_since = None
-        last_lms = None
-        captured = False
-
-        while not captured and time.time() < deadline:
-            frame = grab_frame(cam)
-            dets = pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
-                               config.DETECTOR_NMS_IOU)
-            det = largest_detection(dets)
-            ok = False
-            if det is not None:
-                ok, _ = is_quality_face(det, frame.shape)
-            status = "looking for face..."
-            if det is None:
-                status = "step into frame"
-            elif not ok:
-                status = "move closer / face the camera"
-            elif time.time() < hold_until:
-                status = "hold steady..."
-            else:
-                status = "capturing — hold the pose"
-            if render_frame is not None:
-                render_frame(frame, det, prompt, i, len(prompts), status)
-
-            if ok and time.time() >= hold_until:
-                anchor, eye_dist = landmark_anchor(det)
-                shift_ok = (
-                    direction is None
-                    or baseline_anchor is None
-                    or shift_matches_direction(
-                        anchor, baseline_anchor, baseline_eye_dist, direction
-                    )
-                )
-                if shift_ok:
-                    if last_lms is not None and landmarks_drift(det.landmarks, last_lms) <= config.POSE_STABLE_PIXEL_TOL:
-                        if stable_since is None:
-                            stable_since = time.time()
-                        elif time.time() - stable_since >= config.POSE_STABLE_SEC:
-                            aligned = align_face(frame, det.landmarks)
-                            embeddings.append(pipe.embed(aligned))
-                            if direction is None and baseline_anchor is None:
-                                baseline_anchor = anchor
-                                baseline_eye_dist = eye_dist
-                            captured = True
-                    else:
-                        stable_since = None
-                    last_lms = det.landmarks
-                else:
-                    stable_since = None
-                    last_lms = det.landmarks
-            else:
-                stable_since = None
-                last_lms = None
-
-        if not captured:
-            greeter.say("That's okay! Let's try the next one.")
-            tts.wait_idle(timeout=4)
-    return embeddings
-
-
-# ---------- registration flow (tab-driven) --------------------------------
-
-
-def run_in_panel_registration(
-    panel: RightPanel, db: FaceDB, greeter: Greeter, tts: AsyncTTS,
-    cam: Picamera2, pipe: HailoFacePipeline,
-    render_capture=None,
-) -> bool:
-    """Called when the REGISTER tab submits. Captures poses and writes
-    to the DB. Returns True on successful (re-)registration.
-
-    `render_capture` is forwarded into capture_with_prompts so the cv2
-    window keeps updating during the multi-second pose loop."""
-    f = panel.register_form
-    f.busy = True
-    panel.register_message = "Capturing your photo — follow the friendly voice prompts!"
-
-    is_existing = db.employee_exists(f.emp_id)
-    if is_existing:
-        existing_name = db.get_name(f.emp_id) or ""
-        greeter.say(f"Welcome back, {existing_name}! Just confirming it's you.")
-    else:
-        existing_name = f.name
-
-    embeddings = capture_with_prompts(cam, pipe, greeter, tts, render_capture)
-    if not embeddings:
-        panel.register_message = ("Hmm, we couldn't capture a clear photo. "
-                                   "Take a step closer and try again.")
-        greeter.say("Let's give that another go.")
-        f.busy = False
-        return False
-
-    if is_existing:
-        emp_ids, _, matrix = db.load_all()
-        score = best_self_match(embeddings, emp_ids, matrix, f.emp_id)
-        if score < config.REREGISTER_MATCH_THRESHOLD:
-            panel.register_message = ("Looks like a fresh face! "
-                                       "Try a new Employee ID to register.")
-            greeter.say("Let's set you up with a new profile.")
-            f.busy = False
-            return False
-        for e in embeddings:
-            db.add_embedding(f.emp_id, e)
-        greeter.say(f"Wonderful, I've added {len(embeddings)} new looks for you.")
-        panel.register_message = f"Welcome back, {existing_name}! All updated."
-    else:
-        db.add_employee(f.emp_id, f.name, embeddings)
-        greeter.say(f"Welcome aboard, {f.name}! Lovely to meet you.")
-        panel.register_message = f"Welcome, {f.name}! You are all set."
-
-    f.busy = False
-    panel.set_tab("PROJECTS")  # back to default after success
-    return True
-
-
-# ---------- main loop -----------------------------------------------------
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--no-display", action="store_true")
-    parser.add_argument("--auto-register", action="store_true")
-    parser.add_argument("--no-wake-word", action="store_true")
-    args = parser.parse_args()
-    show_preview = not args.no_display
-
-    pipe = HailoFacePipeline(config.DETECTOR_HEF, config.EMBEDDER_HEF)
-    db = FaceDB()
-    weather = WeatherPoller()
-    weather.start()
-    chat = ChatClient()
-    backend = make_backend()
-    tts = AsyncTTS(backend)
-    greeter = Greeter(tts)
-    cam = open_camera()
-    liveness = LivenessChecker()
-    learner = SilentLearner(db)
-    blinker = BlinkChecker(pipe, grab_frame, lambda *a, **kw: None)
-    panel = RightPanel(db, chat)
-    panel.reload_projects()
-
-    listener: WakeWordListener | None = None
-    state = "ACTIVE" if args.no_wake_word else "IDLE"
-    if not args.no_wake_word:
+    def run(self):
         try:
-            listener = WakeWordListener(
-                config.VOSK_MODEL_DIR, config.WAKE_WORD,
-                samplerate=config.WAKE_WORD_SAMPLERATE,
-                blocksize=config.WAKE_WORD_BLOCKSIZE,
-            )
-            listener.start()
-            print(f"[wake-word] listening for: '{config.WAKE_WORD}'")
-        except WakeWordError as exc:
-            print(f"[wake-word] disabled: {exc}")
-            state = "ACTIVE"
-
-    emp_ids, names, matrix = db.load_all()
-    print(f"Loaded {matrix.shape[0]} embeddings for {len(set(emp_ids))} employees.")
-    print(f"Initial state: {state}")
-
-    unknown_streak = 0
-    last_interaction_at = 0.0
-    activated_at = 0.0
-    blink_confirmed: set[str] = set()
-    session_id = ""
-    seen_in_session: set[str] = set()
-    last_known_emp_id = "anon"
-
-    # ---- mouse / touch ---------------------------------------------------
-    # Single-element list so the cv2 callback (running on the GUI thread)
-    # can hand a click off to the main loop without locking. Touchscreens
-    # deliver button events as mouse events, so this covers both inputs.
-    pending_click: list = [None]
-
-    def on_mouse(event, mx, my, flags, _param):  # noqa: ARG001
-        if event == cv2.EVENT_LBUTTONDOWN:
-            pending_click[0] = (mx, my)
-
-    if show_preview:
-        cv2.namedWindow("Echo AI", cv2.WINDOW_AUTOSIZE)
-        cv2.setMouseCallback("Echo AI", on_mouse)
-
-    # ---- chat voice (Whisper-backed dictation) --------------------------
-    # ChatVoiceCapture pauses the wake-word listener, opens its own mic
-    # stream, buffers PCM with VAD, then hands it to a Whisper backend.
-    # Final transcripts land on chat_voice_q for the main loop to drain.
-    chat_voice_q: queue.Queue = queue.Queue()
-    chat_voice: ChatVoiceCapture | None = None
-    try:
-        chat_voice = ChatVoiceCapture(
-            asr=make_chat_asr(),
-            out_queue=chat_voice_q,
-            wake_listener=listener,
-            on_listening_changed=lambda on: setattr(panel, "chat_listening", on),
-        )
-        print(f"[chat-voice] using {config.CHAT_ASR_BACKEND}")
-    except ChatVoiceCaptureError as exc:
-        print(f"[chat-voice] disabled: {exc}")
-
-    def start_chat_listening() -> None:
-        if chat_voice is None:
+            self.pipe = HailoFacePipeline(config.DETECTOR_HEF, config.EMBEDDER_HEF)
+            self.cam = open_camera()
+        except Exception as exc:
+            print(f"[camera-worker] init failed: {exc!r}")
             return
-        chat_voice.start()
+        emp_ids, names, matrix = self.db.load_all()
+        print(f"Loaded {matrix.shape[0]} embeddings for {len(set(emp_ids))} employees.")
+        self._refresh_idle_data()
 
-    def stop_chat_listening() -> None:
-        if chat_voice is None:
-            panel.chat_listening = False
-            return
-        chat_voice.stop()
+        # State machine local vars.
+        kiosk_state = "ACTIVE" if self.args.no_wake_word else "IDLE"
+        self.state.update(state=kiosk_state, state_since=time.time())
+        unknown_streak = 0
+        last_interaction_at = time.time() if kiosk_state == "ACTIVE" else 0.0
+        activated_at = time.time() if kiosk_state == "ACTIVE" else 0.0
+        seen_in_session: set[str] = set()
+        session_id = uuid.uuid4().hex[:12] if kiosk_state == "ACTIVE" else ""
+        last_known_emp_id = "anon"
+        last_idle_refresh = 0.0
 
-    def go_active(reason: str) -> None:
-        nonlocal state, activated_at, last_interaction_at, session_id
-        state = "ACTIVE"
-        activated_at = time.time()
-        last_interaction_at = activated_at
-        if listener is not None:
-            listener.deactivate()
-        greeter.reset_last()
-        liveness.reset()
-        blink_confirmed.clear()
-        seen_in_session.clear()
-        session_id = uuid.uuid4().hex[:12]
-        chat.budget.reset()
-        panel.session_reset()
-        panel.reload_projects()
-        tts.flush()
-        greeter.say("Hello! Lovely to see you.")
-        print(f"[state] IDLE -> ACTIVE via {reason} (session {session_id})")
+        while not self._stop.is_set():
+            frame = grab_frame(self.cam)
+            self.frames.push(frame)
+            self.state.set_now()
 
-    try:
-        while True:
-            frame = grab_frame(cam)
+            # ---- IDLE -> ACTIVE on wake word OR touch -------
+            if kiosk_state == "IDLE" and self.wake_event.is_set():
+                self.wake_event.clear()
+                kiosk_state = "ACTIVE"
+                activated_at = time.time()
+                last_interaction_at = activated_at
+                seen_in_session = set()
+                session_id = uuid.uuid4().hex[:12]
+                self.greeter.reset_last()
+                self.liveness.reset()
+                self.chat.budget.reset()
+                self.tts.flush()
+                self.state.go_active()
+                self.state.update(
+                    person=None,
+                    chat_history=[],
+                    chat_remaining=config.CHAT_MAX_QUESTIONS_PER_SESSION,
+                    chat_pending=False,
+                )
+                self.greeter.say("Hello! Lovely to see you.")
+                print(f"[state] IDLE -> ACTIVE (session {session_id})")
 
-            # ---- mouse / touch input -------------------------------
-            click = pending_click[0]
-            if click is not None:
-                pending_click[0] = None
-                if state == "IDLE":
-                    # Touch / click anywhere on the welcome screen wakes
-                    # the kiosk (same effect as the wake word). Useful
-                    # when Vosk is offline or the visitor is in a
-                    # noisy environment.
-                    go_active("touch")
-                elif show_preview:
-                    # Translate window pixels to logical (un-scaled)
-                    # coords, then split into camera vs panel.
-                    scale = config.DISPLAY_SCALE or 1.0
-                    wx = int(click[0] / scale)
-                    wy = int(click[1] / scale)
-                    cam_w = config.WINDOW_SIZE[0] - config.PANEL_WIDTH
-                    if wx >= cam_w:
-                        actions = panel.handle_click(wx - cam_w, wy)
-                        if actions:
-                            last_interaction_at = time.time()
-                        if actions.get("start_listening"):
-                            start_chat_listening()
-                        if actions.get("stop_listening"):
-                            stop_chat_listening()
+            # Refresh idle data periodically (projects / metrics /
+            # session card) -- once every 5 s is plenty.
+            if time.time() - last_idle_refresh > 5:
+                last_idle_refresh = time.time()
+                self._refresh_idle_data()
 
-            # ---- drain free-form ASR results -----------------------
+            # ---- process register requests (from web POST) ---
             try:
                 while True:
-                    spoken = chat_voice_q.get_nowait()
-                    if state != "ACTIVE" or not spoken:
+                    req = self.register_q.get_nowait()
+                    if kiosk_state != "ACTIVE":
                         continue
-                    stop_chat_listening()
-                    panel.chat_partial = ""
-                    _submit_chat(panel, chat, last_known_emp_id, spoken)
+                    self._run_registration(req)
+                    emp_ids, names, matrix = self.db.load_all()
                     last_interaction_at = time.time()
             except queue.Empty:
                 pass
 
-            # ---- IDLE -> ACTIVE on wake word -------------------------
-            if state == "IDLE" and listener is not None and listener.is_activated():
-                go_active("wake-word")
+            # ---- process chat-voice transcripts --------------
+            try:
+                while True:
+                    spoken = self.chat_q.get_nowait()
+                    if kiosk_state != "ACTIVE" or not spoken:
+                        continue
+                    self._submit_chat(last_known_emp_id, spoken)
+                    last_interaction_at = time.time()
+            except queue.Empty:
+                pass
 
-            # ---- recognition (only in ACTIVE) -----------------------
+            # ---- recognition (only in ACTIVE) ----------------
             biggest_quality_unknown = False
-            labels: dict[int, str] = {}
-            dets = pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
-                               config.DETECTOR_NMS_IOU)
+            dets = self.pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
+                                    config.DETECTOR_NMS_IOU)
             biggest = largest_detection(dets)
 
-            if state == "ACTIVE":
-                biggest_is_live = liveness.update(frame, biggest)
-                pending_greets: list[tuple[str, str, np.ndarray, float]] = []
-
+            if kiosk_state == "ACTIVE":
+                biggest_is_live = self.liveness.update(frame, biggest)
+                pending_greets = []
                 for i, det in enumerate(dets):
-                    ok, reason = is_quality_face(det, frame.shape)
+                    ok, _ = is_quality_face(det, frame.shape)
                     if not ok:
-                        labels[i] = f"low quality: {reason}"
                         continue
                     if det is biggest:
                         if not biggest_is_live:
-                            labels[i] = f"checking liveness..."
                             continue
                     else:
-                        sf_ok, sf_reason = LivenessChecker.single_frame_check(frame, det)
+                        sf_ok, _ = LivenessChecker.single_frame_check(frame, det)
                         if not sf_ok:
-                            labels[i] = f"liveness: {sf_reason}"
                             continue
-
                     aligned = align_face(frame, det.landmarks)
-                    emb = pipe.embed(aligned)
+                    emb = self.pipe.embed(aligned)
                     idx, score = cosine_match(emb, matrix)
                     if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
-                        labels[i] = f"{names[idx]} ({score:.2f})"
-                        if learner.maybe_add(emp_ids[idx], names[idx], emb, score):
-                            emp_ids, names, matrix = db.load_all()
-                        pending_greets.append(
-                            (emp_ids[idx], names[idx], emb, score)
-                        )
-                    else:
-                        labels[i] = f"unknown ({score:.2f})"
-                        if det is biggest:
-                            biggest_quality_unknown = True
+                        if self.learner.maybe_add(emp_ids[idx], names[idx], emb, score):
+                            emp_ids, names, matrix = self.db.load_all()
+                        pending_greets.append((emp_ids[idx], names[idx]))
+                    elif det is biggest:
+                        biggest_quality_unknown = True
 
-                # Blink challenge on any unconfirmed emp_id we want to greet.
-                need_blink = [
-                    g for g in pending_greets if g[0] not in blink_confirmed
-                ]
-                if config.LIVENESS_REQUIRE_BLINK and need_blink:
-                    if blinker.run(cam, greeter, show_preview=False):
-                        for eid, _, _, _ in need_blink:
-                            blink_confirmed.add(eid)
+                for emp_id, name in pending_greets:
+                    if self.greeter.greet(emp_id, name):
                         last_interaction_at = time.time()
-                    else:
-                        greeter.say("One more blink, please!")
-                        pending_greets = [
-                            g for g in pending_greets if g[0] in blink_confirmed
-                        ]
-
-                for emp_id, name, _, _ in pending_greets:
-                    if greeter.greet(emp_id, name):
-                        last_interaction_at = time.time()
-                        # Counter increments at most once per (emp_id, session)
                         if emp_id not in seen_in_session:
                             seen_in_session.add(emp_id)
-                            db.record_interaction(emp_id, session_id)
+                            self.db.record_interaction(emp_id, session_id)
+                            self._push_metrics()
                         last_known_emp_id = emp_id
-                        panel.set_chat_emp_id(emp_id)
 
-                # Auto-jump to REGISTER tab when an unknown sticks around,
-                # but only if the user is on the default PROJECTS view.
-                # Hijacking someone mid-chat or mid-registration is jarring
-                # -- if they want to register a different person they can
-                # press R themselves.
+                # Auto-open the register overlay for new visitors.
+                snap = self.state.snapshot()
                 if biggest_quality_unknown:
                     last_interaction_at = time.time()
                     unknown_streak += 1
-                    if (args.auto_register
+                    if (self.args.auto_register
                             and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
-                            and panel.tab == "PROJECTS"):
+                            and not snap.get("register_open")
+                            and not snap.get("chat_pending")):
                         unknown_streak = 0
-                        panel.set_tab("REGISTER")
-                        panel.register_message = (
-                            "Hi there! Pop your name and Employee ID below "
-                            "and press Enter to introduce yourself."
+                        self.state.update(
+                            register_open=True,
+                            register_step="form",
+                            register_message=(
+                                "Hi! Pop your details below and tap Register."
+                            ),
                         )
-                        greeter.say(
-                            "Hello! Looks like you're new — please pop your "
-                            "details into the screen so I can greet you next time."
-                        )
+                        self.greeter.say(messages.random_unrecognized_greeting())
                 else:
                     unknown_streak = 0
 
-                # Idle timeout.
-                # Don't sleep while the user is on REGISTER or CHAT, or
-                # while a chat reply is in flight -- those are explicit
-                # signs the user is engaged even if nothing else is
-                # changing on the camera side.
+                # Idle timeout (keep alive while user is engaged).
                 user_engaged = (
-                    panel.tab in ("REGISTER", "CHAT")
-                    or panel.chat_pending_future is not None
+                    snap.get("register_open")
+                    or snap.get("chat_pending")
+                    or snap.get("listening")
                 )
                 if user_engaged:
                     last_interaction_at = time.time()
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
                 if (idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
                         or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)):
-                    if listener is not None:
-                        state = "IDLE"
-                        liveness.reset()
-                        greeter.reset_last()
-                        listener.deactivate()
-                        print(f"[state] ACTIVE -> IDLE (idle {idle_for:.0f}s, "
-                              f"interactions={len(seen_in_session)})")
+                    kiosk_state = "IDLE"
+                    self.liveness.reset()
+                    self.greeter.reset_last()
+                    self.state.go_idle()
+                    print(f"[state] ACTIVE -> IDLE (idle {idle_for:.0f}s, "
+                          f"interactions={len(seen_in_session)})")
 
-                # Chat result polling.
-                if panel.chat_pending_future is not None and panel.chat_pending_future.done():
-                    fut = panel.chat_pending_future
-                    panel.chat_pending_future = None
+                # Poll the chat future.
+                fut = getattr(self, "_chat_future", None)
+                if fut is not None and fut.done():
+                    self._chat_future = None
                     try:
                         answer = fut.result()
-                        panel.chat_history.append(("assistant", answer))
-                        greeter.say(answer)
-                        last_interaction_at = time.time()
                     except ChatBudgetError as exc:
-                        panel.chat_history.append(("assistant", str(exc)))
+                        answer = str(exc)
                     except ChatBackendError as exc:
-                        panel.chat_history.append((
-                            "assistant",
-                            "I'm having a little trouble reaching the chat "
-                            f"service right now — let's try again in a moment. ({exc})"
-                        ))
+                        answer = ("I'm having a little trouble reaching the "
+                                  f"chat service right now ({exc}).")
                     except Exception as exc:  # noqa: BLE001
-                        panel.chat_history.append((
-                            "assistant",
-                            f"Hmm, something went sideways: {exc}. "
-                            "Please try again."
-                        ))
-
-            # ---- render -----------------------------------------------
-            if show_preview:
-                if state == "IDLE":
-                    composed = views.render_idle(
-                        weather.get(),
-                        db.interaction_count_total(),
-                        config.WINDOW_SIZE,
-                    )
-                else:
-                    cam_w = config.WINDOW_SIZE[0] - config.PANEL_WIDTH
-                    cam_h = config.WINDOW_SIZE[1]
-                    cam_pane = resize_to_camera_pane(frame, cam_w, cam_h)
-                    # Rescale detection coords from source frame to pane.
-                    pane_dets = _rescale_dets(dets, frame.shape, cam_pane.shape)
-                    draw_face_overlays(
-                        cam_pane, pane_dets,
-                        lambda d: labels.get(pane_dets.index(d), ""),
-                    )
-                    panel_img = panel.render(len(seen_in_session))
-                    composed = views.render_active(cam_pane, panel_img)
-
-                if config.DISPLAY_SCALE != 1.0:
-                    new_w = max(1, int(composed.shape[1] * config.DISPLAY_SCALE))
-                    new_h = max(1, int(composed.shape[0] * config.DISPLAY_SCALE))
-                    composed = cv2.resize(composed, (new_w, new_h),
-                                          interpolation=cv2.INTER_AREA)
-                cv2.imshow("Echo AI", composed)
-                raw = cv2.waitKey(1)
-                key = raw & 0xFF if raw != -1 else 0xFF
-                if key == ord("q"):
-                    break
-                if state == "ACTIVE" and key != 0xFF:
-                    # Any keystroke counts as user activity -- typing in
-                    # CHAT or REGISTER must keep the kiosk awake even if
-                    # nobody is in front of the camera.
+                        answer = f"Hmm, something went sideways: {exc}"
+                    self.state.update(chat_pending=False)
+                    self._append_chat("assistant", answer)
+                    self.greeter.say(answer)
                     last_interaction_at = time.time()
-                    actions = panel.handle_key(key)
-                    if actions.get("start_listening"):
-                        start_chat_listening()
-                    if actions.get("stop_listening"):
-                        stop_chat_listening()
-                    if actions.get("submit_register"):
-                        def _render_capture(f, det, prompt, idx, total, status):
-                            panel.register_message = (
-                                f"Pose {idx}/{total}: {prompt}\n{status}"
-                            )
-                            cam_w = config.WINDOW_SIZE[0] - config.PANEL_WIDTH
-                            cam_h = config.WINDOW_SIZE[1]
-                            cam_pane = resize_to_camera_pane(f, cam_w, cam_h)
-                            if det is not None:
-                                pane_dets = _rescale_dets(
-                                    [det], f.shape, cam_pane.shape,
-                                )
-                                draw_face_overlays(
-                                    cam_pane, pane_dets, lambda _d: status,
-                                )
-                            panel_img = panel.render(len(seen_in_session))
-                            composed = views.render_active(cam_pane, panel_img)
-                            if config.DISPLAY_SCALE != 1.0:
-                                nw = max(1, int(composed.shape[1] * config.DISPLAY_SCALE))
-                                nh = max(1, int(composed.shape[0] * config.DISPLAY_SCALE))
-                                composed = cv2.resize(
-                                    composed, (nw, nh),
-                                    interpolation=cv2.INTER_AREA,
-                                )
-                            cv2.imshow("Echo AI", composed)
-                            cv2.waitKey(1)
-                        run_in_panel_registration(
-                            panel, db, greeter, tts, cam, pipe, _render_capture,
+
+    # ---- registration flow (driven by /api/register) -----------------
+
+    def _run_registration(self, req: dict):
+        emp_id = req["emp_id"]
+        name = req["name"]
+        self.state.update(register_step="capturing",
+                          register_message=f"Capturing your photo, {name}!")
+
+        is_existing = self.db.employee_exists(emp_id)
+        if is_existing:
+            existing_name = self.db.get_name(emp_id) or ""
+            self.greeter.say(
+                f"Welcome back, {existing_name}! Confirming it's you."
+            )
+
+        embeddings = self._capture_with_prompts()
+        if not embeddings:
+            self.state.update(
+                register_step="form",
+                register_message=("Hmm, we couldn't capture a clear photo. "
+                                   "Take a step closer and try again."),
+                register_pose=None,
+            )
+            self.greeter.say("Let's give that another go.")
+            return
+
+        if is_existing:
+            emp_ids, _, matrix = self.db.load_all()
+            score = best_self_match(embeddings, emp_ids, matrix, emp_id)
+            if score < config.REREGISTER_MATCH_THRESHOLD:
+                self.state.update(
+                    register_step="form",
+                    register_message="Looks like a fresh face! Try a new Employee ID.",
+                    register_pose=None,
+                )
+                self.greeter.say("Let's set you up with a new profile.")
+                return
+            for e in embeddings:
+                self.db.add_embedding(emp_id, e)
+            confirm = messages.random_registration_prompt(
+                "confirm_registration", name=name,
+            )
+            self.greeter.say(confirm)
+            self.state.update(
+                register_open=False,
+                register_pose=None,
+                register_message=f"Welcome back, {name}!",
+            )
+        else:
+            self.db.add_employee(emp_id, name, embeddings)
+            confirm = messages.random_registration_prompt(
+                "confirm_registration", name=name,
+            )
+            self.greeter.say(confirm)
+            self.state.update(
+                register_open=False,
+                register_pose=None,
+                register_message=f"Welcome, {name}!",
+            )
+
+    def _capture_with_prompts(self):
+        embeddings = []
+        prompts = config.POSE_PROMPTS
+        baseline_anchor = None
+        baseline_eye_dist = 1.0
+
+        for i, (prompt, direction) in enumerate(prompts, start=1):
+            self.greeter.say(prompt)
+            self.state.update(register_pose={
+                "idx": i, "total": len(prompts),
+                "prompt": prompt, "status": "speaking..."
+            })
+            # Render frames while the prompt plays.
+            wait_deadline = time.time() + 8
+            while (not self.tts.wait_idle(timeout=0.05)
+                   and time.time() < wait_deadline):
+                self.frames.push(grab_frame(self.cam))
+
+            hold_until = time.time() + config.POSE_HOLD_SEC
+            deadline = (time.time() + config.POSE_HOLD_SEC
+                        + config.POSE_CAPTURE_TIMEOUT_SEC)
+            stable_since = None
+            last_lms = None
+            captured = False
+
+            while not captured and time.time() < deadline:
+                frame = grab_frame(self.cam)
+                self.frames.push(frame)
+                dets = self.pipe.detect(
+                    frame, config.DETECTOR_SCORE_THRESHOLD,
+                    config.DETECTOR_NMS_IOU,
+                )
+                det = largest_detection(dets)
+                ok = False
+                if det is not None:
+                    ok, _ = is_quality_face(det, frame.shape)
+                if det is None:
+                    status = "step into frame"
+                elif not ok:
+                    status = "move closer / face the camera"
+                elif time.time() < hold_until:
+                    status = "hold steady..."
+                else:
+                    status = "capturing — hold the pose"
+                self.state.patch("register_pose", status=status)
+
+                if ok and time.time() >= hold_until:
+                    anchor, eye_dist = landmark_anchor(det)
+                    shift_ok = (
+                        direction is None
+                        or baseline_anchor is None
+                        or shift_matches_direction(
+                            anchor, baseline_anchor, baseline_eye_dist, direction,
                         )
-                        emp_ids, names, matrix = db.load_all()
-                        last_interaction_at = time.time()
-                    if (q := actions.get("submit_chat")):
-                        _submit_chat(panel, chat, last_known_emp_id, q)
-                        last_interaction_at = time.time()
-                elif state == "IDLE" and key == ord(" "):
-                    # Space bar in IDLE wakes the kiosk too -- handy when
-                    # there's no mic or you're testing.
-                    go_active("space-key")
-            else:
-                # Headless: just keep the loop running.
-                time.sleep(0.02)
-    finally:
+                    )
+                    if shift_ok:
+                        if (last_lms is not None
+                                and landmarks_drift(det.landmarks, last_lms)
+                                <= config.POSE_STABLE_PIXEL_TOL):
+                            if stable_since is None:
+                                stable_since = time.time()
+                            elif time.time() - stable_since >= config.POSE_STABLE_SEC:
+                                aligned = align_face(frame, det.landmarks)
+                                embeddings.append(self.pipe.embed(aligned))
+                                if direction is None and baseline_anchor is None:
+                                    baseline_anchor = anchor
+                                    baseline_eye_dist = eye_dist
+                                captured = True
+                        else:
+                            stable_since = None
+                        last_lms = det.landmarks
+                    else:
+                        stable_since = None
+                        last_lms = det.landmarks
+                else:
+                    stable_since = None
+                    last_lms = None
+
+            if not captured:
+                self.greeter.say("That's okay! Let's try the next one.")
+                self.tts.wait_idle(timeout=3)
+        self.state.update(register_pose=None)
+        return embeddings
+
+    # ---- chat ---------------------------------------------------------
+
+    def _submit_chat(self, emp_id: str, question: str):
+        self._append_chat("user", question)
+        if self.chat.budget.remaining(emp_id) <= 0:
+            answer = (
+                f"Lovely chatting! That's {config.CHAT_MAX_QUESTIONS_PER_SESSION} "
+                "questions for now — come say hi again anytime."
+            )
+            self._append_chat("assistant", answer)
+            self.greeter.say(answer)
+            return
+        self.state.update(chat_pending=True)
+        self._chat_future = self.chat.submit(emp_id, question)
+
+    def _append_chat(self, role: str, text: str):
+        snap = self.state.snapshot()
+        history = list(snap.get("chat_history") or [])
+        history.append([role, text])
+        history = history[-12:]    # cap so SSE diffs stay small
+        emp_id = (snap.get("person") or {}).get("emp_id", "anon")
+        self.state.update(
+            chat_history=history,
+            chat_remaining=self.chat.budget.remaining(emp_id),
+        )
+
+    # ---- idle dashboard data ------------------------------------------
+
+    def _refresh_idle_data(self):
+        # Projects.
+        projects = [
+            {"id": r[0], "title": r[1], "description": r[2],
+             "ordering": r[3]}
+            for r in self.db.list_projects()
+        ]
+        # Sessions: next upcoming.
+        nxt = self.db.next_session()
+        next_session = None
+        if nxt is not None:
+            next_session = {
+                "id": nxt[0], "title": nxt[1],
+                "starts_at": nxt[2], "ends_at": nxt[3], "notes": nxt[4],
+            }
+        # Metrics.
+        best_day, best_count = self.db.interaction_best_day()
+        metrics = {
+            "total":    self.db.interaction_count_total(),
+            "today":    self.db.interaction_count_today(),
+            "week":     self.db.interaction_count_this_week(),
+            "best_day": best_day,
+            "best_count": best_count,
+        }
+        self.state.update(projects=projects,
+                          next_session=next_session,
+                          metrics=metrics)
+
+    def _push_metrics(self):
+        best_day, best_count = self.db.interaction_best_day()
+        self.state.update(metrics={
+            "total":    self.db.interaction_count_total(),
+            "today":    self.db.interaction_count_today(),
+            "week":     self.db.interaction_count_this_week(),
+            "best_day": best_day,
+            "best_count": best_count,
+        })
+
+
+# ---------- main ----------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--auto-register", action="store_true")
+    parser.add_argument("--no-wake-word", action="store_true")
+    parser.add_argument("--no-display", action="store_true",
+                        help="(compat) ignored -- the kiosk has no cv2 window.")
+    args = parser.parse_args()
+
+    db = FaceDB()
+    state = StateBus()
+    state.update(
+        brand=getattr(config, "BRAND_NAME", "ECHO SCOPE"),
+        wake_phrase=config.WAKE_WORD,
+        contact_email=getattr(config, "CONTACT_EMAIL", ""),
+    )
+
+    weather = WeatherPoller()
+    weather.start()
+    state_weather_pump = _start_weather_pump(weather, state)
+
+    fun_facts = FunFactRotator(state)
+    fun_facts.start()
+
+    tts = AsyncTTS(make_backend())
+    chat = ChatClient()
+    state.update(chat_backend=chat.status(),
+                 chat_remaining=config.CHAT_MAX_QUESTIONS_PER_SESSION)
+
+    greeter = Greeter(tts, state)
+    learner = SilentLearner(db)
+    frames = FrameStreamer()
+
+    wake_event = threading.Event()
+    register_q: queue.Queue = queue.Queue()
+    chat_q: queue.Queue = queue.Queue()
+
+    # Wake-word listener.
+    listener: WakeWordListener | None = None
+    if not args.no_wake_word:
         try:
-            stop_chat_listening()
-        except Exception:
-            pass
+            listener = WakeWordListener(
+                config.VOSK_MODEL_DIR, config.WAKE_WORD,
+                samplerate=config.WAKE_WORD_SAMPLERATE,
+            )
+
+            def _on_wake_word():
+                wake_event.set()
+            # The listener publishes via the _activated Event already.
+            listener.start()
+            # Poll thread: convert listener.is_activated() to wake_event.
+            threading.Thread(target=_poll_wake, args=(listener, wake_event),
+                              daemon=True).start()
+            print(f"[wake-word] listening for: '{config.WAKE_WORD}'")
+        except WakeWordError as exc:
+            print(f"[wake-word] disabled: {exc}")
+
+    # Chat voice.
+    chat_voice: ChatVoiceCapture | None = None
+    try:
+        chat_voice = ChatVoiceCapture(
+            asr=make_chat_asr(),
+            out_queue=chat_q,
+            wake_listener=listener,
+            on_listening_changed=lambda on: state.update(listening=on),
+        )
+        print(f"[chat-voice] using {config.CHAT_ASR_BACKEND}")
+    except ChatVoiceCaptureError as exc:
+        print(f"[chat-voice] disabled: {exc}")
+
+    # Worker thread.
+    worker = CameraWorker(db, state, frames, tts, chat, greeter, learner,
+                          register_q, chat_q, wake_event, args)
+    worker.start()
+
+    # Flask app -- callbacks bridge the browser to the worker.
+    def request_wake():
+        wake_event.set()
+
+    def request_register(payload):
+        register_q.put(payload)
+
+    def request_chat(question):
+        # Route chat questions through the same chat_q the chat-voice
+        # capture uses so the worker only has one entrypoint.
+        chat_q.put(question)
+
+    def listen_start():
+        if chat_voice is not None:
+            chat_voice.start()
+
+    def listen_stop():
+        if chat_voice is not None:
+            chat_voice.stop()
+
+    app = create_app(state, frames, db,
+                     request_wake=request_wake,
+                     request_register=request_register,
+                     request_chat=request_chat,
+                     listen_start=listen_start,
+                     listen_stop=listen_stop)
+
+    host = getattr(config, "KIOSK_HOST", "127.0.0.1")
+    port = int(os.environ.get("KIOSK_PORT", getattr(config, "KIOSK_PORT", 8080)))
+    print(f"echo-scope serving on http://{host}:{port}")
+    try:
+        app.run(host=host, port=port, threaded=True, use_reloader=False)
+    finally:
+        worker.stop()
         if listener is not None:
             listener.stop()
         weather.stop()
+        fun_facts.stop()
         chat.shutdown()
         tts.stop()
-        cam.stop()
-        pipe.close()
-        db.close()
-        if show_preview:
-            cv2.destroyAllWindows()
 
 
-def _submit_chat(panel: RightPanel, chat: ChatClient, emp_id: str,
-                 question: str) -> None:
-    panel.chat_history.append(("user", question))
-    if chat.budget.remaining(emp_id) <= 0:
-        panel.chat_history.append((
-            "assistant",
-            f"Lovely chatting! That's {config.CHAT_MAX_QUESTIONS_PER_SESSION} "
-            "questions for now — come say hi again anytime."
-        ))
-        return
-    panel.chat_pending_future = chat.submit(emp_id, question)
-    panel.chat_pending_started_at = time.time()
+def _poll_wake(listener: WakeWordListener, ev: threading.Event):
+    while True:
+        if listener.is_activated():
+            ev.set()
+            listener.deactivate()
+        time.sleep(0.1)
 
 
-def _rescale_dets(dets, src_shape, dst_shape):
-    """Scale detection bboxes / landmarks from the source frame coords to
-    the resized camera pane so overlays line up."""
-    if not dets:
-        return dets
-    src_h, src_w = src_shape[:2]
-    dst_h, dst_w = dst_shape[:2]
-    scale = min(dst_w / src_w, dst_h / src_h)
-    new_w = src_w * scale
-    new_h = src_h * scale
-    x_off = (dst_w - new_w) / 2
-    y_off = (dst_h - new_h) / 2
-
-    out = []
-    for d in dets:
-        # Mutate-shallow-copy via a SimpleNamespace-like wrapper isn't
-        # worth the complexity — reuse the dataclass.
-        from copy import copy
-        d2 = copy(d)
-        x1, y1, x2, y2 = d.bbox
-        d2.bbox = (
-            x1 * scale + x_off, y1 * scale + y_off,
-            x2 * scale + x_off, y2 * scale + y_off,
-        )
-        d2.landmarks = d.landmarks * scale + np.array([x_off, y_off])
-        out.append(d2)
-    return out
+def _start_weather_pump(weather: WeatherPoller, state: StateBus):
+    """Mirror WeatherPoller.get() into state.weather every 30 s."""
+    def pump():
+        while True:
+            w = weather.get()
+            state.update(weather={
+                "ok": w.get("ok", False),
+                "temp_c": w.get("temp_c"),
+                "label": w.get("label"),
+                "city": w.get("city"),
+                "humidity": w.get("humidity"),
+                "icon": w.get("icon", "🌡️"),
+            })
+            time.sleep(30)
+    t = threading.Thread(target=pump, daemon=True)
+    t.start()
+    return t
 
 
 if __name__ == "__main__":

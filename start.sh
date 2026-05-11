@@ -185,12 +185,74 @@ if grep -q '^CHAT_ASR_BACKEND[[:space:]]*=[[:space:]]*"faster-whisper"' config.p
         >/tmp/echo-whisper-warmup.log 2>&1 &) || true
 fi
 
+# ---- Launch the kiosk ----------------------------------------------------
+# Backend (Flask + camera worker) runs in the background; once it's
+# serving /api/state we open Chromium in kiosk mode pointed at the SPA.
+: "${KIOSK_PORT:=8080}"
+: "${KIOSK_URL:=http://127.0.0.1:${KIOSK_PORT}}"
+: "${KIOSK_BROWSER:=auto}"
+: "${KIOSK_BACKEND_LOG:=/tmp/echo-backend.log}"
+
 echo "---------------------------------------------------------------"
-echo " pi5 face-recognition"
+echo " ECHO SCOPE kiosk"
 echo "   project    : $PI5_DIR"
 echo "   mic        : sounddevice index $SD_DEVICE"
 echo "   speaker    : $AUDIO_OUTPUT_DEVICE"
+echo "   web URL    : $KIOSK_URL"
+echo "   backend log: $KIOSK_BACKEND_LOG"
 echo "   args       : $EXTRA_ARGS $*"
 echo "---------------------------------------------------------------"
 
-exec python main.py $EXTRA_ARGS "$@"
+# Start backend in the background; trap shutdown so killing this script
+# stops the python process too.
+python main.py $EXTRA_ARGS "$@" >"$KIOSK_BACKEND_LOG" 2>&1 &
+BACKEND_PID=$!
+trap 'kill $BACKEND_PID 2>/dev/null; wait $BACKEND_PID 2>/dev/null; exit' \
+     INT TERM
+
+# Wait up to 30 s for the backend to answer.
+for _ in $(seq 1 60); do
+    if curl -sf -m 1 "${KIOSK_URL}/api/state" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.5
+done
+if ! curl -sf -m 1 "${KIOSK_URL}/api/state" >/dev/null 2>&1; then
+    echo "Error: backend didn't come up -- see $KIOSK_BACKEND_LOG" >&2
+    kill $BACKEND_PID 2>/dev/null
+    exit 1
+fi
+echo "   backend    : up (pid $BACKEND_PID)"
+
+# Pick a browser binary.
+pick_browser() {
+    if [[ "$KIOSK_BROWSER" != "auto" ]]; then
+        echo "$KIOSK_BROWSER"; return
+    fi
+    for b in chromium-browser chromium google-chrome chrome firefox; do
+        if command -v "$b" >/dev/null 2>&1; then
+            echo "$b"; return
+        fi
+    done
+    echo ""
+}
+
+BROWSER=$(pick_browser)
+if [[ -z "$BROWSER" ]]; then
+    echo "Note: no kiosk browser found. Open ${KIOSK_URL} manually." >&2
+    wait $BACKEND_PID
+else
+    echo "   browser    : $BROWSER (kiosk mode)"
+    case "$BROWSER" in
+        chromium*|google-chrome|chrome)
+            exec "$BROWSER" \
+                --kiosk --noerrdialogs --disable-infobars \
+                --disable-features=TranslateUI \
+                --autoplay-policy=no-user-gesture-required \
+                --app="$KIOSK_URL"
+            ;;
+        *)
+            exec "$BROWSER" "$KIOSK_URL"
+            ;;
+    esac
+fi
