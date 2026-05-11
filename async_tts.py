@@ -34,11 +34,16 @@ class AsyncTTS:
     def name(self) -> str:
         return getattr(self._backend, "name", "?")
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, on_start=None) -> None:
+        """Queue text for spoken output. If `on_start` is provided, it
+        is invoked from the TTS worker thread right BEFORE the backend
+        starts playing this utterance. Use that hook to push UI state
+        (toasts, transcript banners) so the picture and audio land
+        together rather than the UI racing ahead of the queue."""
         text = (text or "").strip()
         if not text:
             return
-        self._q.put(text)
+        self._q.put((text, on_start))
 
     def wait_idle(self, timeout: float | None = None) -> bool:
         """Block until the queue is fully drained. Returns True if drained
@@ -73,8 +78,14 @@ class AsyncTTS:
             try:
                 if item is _SHUTDOWN:
                     return
+                text, on_start = item
+                if on_start is not None:
+                    try:
+                        on_start()
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[async-tts] on_start callback failed: {exc!r}")
                 try:
-                    self._backend.speak(item)
+                    self._backend.speak(text)
                 except Exception as exc:  # noqa: BLE001
                     print(f"[async-tts] speak failed: {exc!r}")
             finally:

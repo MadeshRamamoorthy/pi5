@@ -170,6 +170,38 @@
         <span class="live-dot" aria-hidden="true"></span>
       </button>
 
+      <!-- Pose-capture progress, shown on the active screen during
+           registration rather than blocking the camera with the form
+           overlay. -->
+      <div id="active-pose" class="card glass pose-card" hidden>
+        <div class="card-title">
+          <span class="fact-emoji">📸</span>
+          <h3>POSE <span id="pose-idx">1</span>/<span id="pose-total">5</span></h3>
+        </div>
+        <p id="pose-prompt">—</p>
+        <p class="pose-status" id="pose-status">—</p>
+      </div>
+
+    </div>
+
+    <!-- Chat-mic overlay (pulsating, while chat-voice is recording).
+         Sits over the camera so the user knows the kiosk is listening
+         to them, not still doing recognition. -->
+    <div id="listen-overlay" class="overlay listen-overlay" hidden>
+      <div class="listen-stage">
+        <div class="mic-rings" aria-hidden="true">
+          <span class="ring r1"></span>
+          <span class="ring r2"></span>
+          <span class="ring r3"></span>
+          <span class="mic-core">
+            <svg viewBox="0 0 16 20" width="36" height="46" fill="#001a26">
+              <path d="M8 0C6.34 0 5 1.34 5 3V10C5 11.66 6.34 13 8 13C9.66 13 11 11.66 11 10V3C11 1.34 9.66 0 8 0ZM13.91 9C13.91 12.04 11.3 14.5 8 14.5C4.7 14.5 2.09 12.04 2.09 9H0.18C0.18 12.53 2.94 15.45 6.4 15.92V20H9.6V15.92C13.06 15.45 15.82 12.53 15.82 9H13.91Z"/>
+            </svg>
+          </span>
+        </div>
+        <div class="listen-label">Listening…</div>
+        <div class="listen-hint">Speak now — tap anywhere to stop</div>
+      </div>
     </div>
 
     <!-- Toast -->
@@ -211,11 +243,6 @@
           </label>
           <button type="submit">Register</button>
         </form>
-        <div class="pose-progress" id="register-pose" hidden>
-          <h3>Pose <span id="pose-idx">1</span>/<span id="pose-total">5</span></h3>
-          <p id="pose-prompt">—</p>
-          <p class="pose-status" id="pose-status">—</p>
-        </div>
       </div>
     </div>
   </section>

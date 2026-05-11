@@ -84,6 +84,9 @@
     if ("listening" in diff) {
       document.body.dataset.listening = diff.listening ? "true" : "false";
       bind("listen-label", diff.listening ? "Listening..." : "Tap to speak");
+      // Big chat-mic overlay sits over the camera while recording.
+      const lo = $("#listen-overlay");
+      if (lo) lo.hidden = !diff.listening;
     }
     if ("weather" in diff)        renderWeather(diff.weather);
     if ("metrics" in diff)        renderMetrics(diff.metrics);
@@ -232,9 +235,11 @@
   }
 
   // ---- register pose ----------------------------------------------------
-
+  // Pose-capture progress lives on the active screen now (not inside
+  // the registration form overlay) so the user can see the camera feed
+  // while turning their head.
   function renderRegisterPose(p) {
-    const box = $("#register-pose");
+    const box = $("#active-pose");
     if (!box) return;
     if (!p) { box.hidden = true; return; }
     box.hidden = false;
@@ -278,6 +283,10 @@
   document.getElementById("listen-toggle").addEventListener("click", () => {
     if (state.listening) post("/api/listen/stop");
     else                 post("/api/listen/start");
+  });
+  // Tap anywhere on the listen overlay to stop listening.
+  $("#listen-overlay")?.addEventListener("click", () => {
+    if (state.listening) post("/api/listen/stop");
   });
 
   const chatForm = $("#chat-form");

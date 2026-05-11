@@ -116,15 +116,22 @@ class Greeter:
         self._last_greeted[emp_id] = now
         msg = messages.random_recognized_greeting(name)
         print(f"[GREET] {msg}")
-        self._tts.speak(msg)
-        self._state.update(person={"emp_id": emp_id, "name": name},
-                           toast={"text": msg, "since": time.time()})
+        # Push the toast + person state from the TTS worker thread so
+        # the UI update lands exactly when audio starts playing, not
+        # N queued utterances earlier.
+        def on_start():
+            self._state.update(
+                person={"emp_id": emp_id, "name": name},
+                toast={"text": msg, "since": time.time()},
+            )
+        self._tts.speak(msg, on_start=on_start)
         return True
 
     def say(self, text: str) -> None:
         print(f"[TTS] {text}")
-        self._tts.speak(text)
-        self._state.update(toast={"text": text, "since": time.time()})
+        def on_start():
+            self._state.update(toast={"text": text, "since": time.time()})
+        self._tts.speak(text, on_start=on_start)
 
     def reset_last(self) -> None:
         self._last_greeted.clear()
@@ -160,7 +167,7 @@ class CameraWorker(threading.Thread):
 
     def __init__(self, db, state, frames, tts, chat, greeter, learner,
                  register_queue, chat_queue, wake_event,
-                 args):
+                 args, listener=None):
         super().__init__(name="camera-worker")
         self.db = db
         self.state = state
@@ -172,6 +179,7 @@ class CameraWorker(threading.Thread):
         self.register_q = register_queue
         self.chat_q = chat_queue
         self.wake_event = wake_event
+        self.listener = listener
         self.args = args
         self.cam = None
         self.pipe = None
@@ -229,6 +237,11 @@ class CameraWorker(threading.Thread):
                     chat_remaining=config.CHAT_MAX_QUESTIONS_PER_SESSION,
                     chat_pending=False,
                 )
+                # Pause the wake-word listener while ACTIVE -- there's no
+                # point burning CPU / contending for the mic when the
+                # user is already engaged with the kiosk.
+                if self.listener is not None:
+                    self.listener.pause()
                 self.greeter.say("Hello! Lovely to see you.")
                 print(f"[state] IDLE -> ACTIVE (session {session_id})")
 
@@ -350,6 +363,10 @@ class CameraWorker(threading.Thread):
                     self.liveness.reset()
                     self.greeter.reset_last()
                     self.state.go_idle()
+                    # Resume the wake-word listener -- the user is gone,
+                    # we need to be listening for the next "hello echo".
+                    if self.listener is not None:
+                        self.listener.resume()
                     print(f"[state] ACTIVE -> IDLE (idle {idle_for:.0f}s, "
                           f"interactions={len(seen_in_session)})")
 
@@ -377,8 +394,14 @@ class CameraWorker(threading.Thread):
     def _run_registration(self, req: dict):
         emp_id = req["emp_id"]
         name = req["name"]
-        self.state.update(register_step="capturing",
-                          register_message=f"Capturing your photo, {name}!")
+        # Close the form overlay immediately so the user can see the
+        # camera feed during pose capture. Pose progress now renders
+        # as a card on the active screen via state.register_pose.
+        self.state.update(
+            register_open=False,
+            register_step="capturing",
+            register_message=f"Capturing your photo, {name}!",
+        )
 
         is_existing = self.db.employee_exists(emp_id)
         if is_existing:
@@ -671,7 +694,8 @@ def main():
 
     # Worker thread.
     worker = CameraWorker(db, state, frames, tts, chat, greeter, learner,
-                          register_q, chat_q, wake_event, args)
+                          register_q, chat_q, wake_event, args,
+                          listener=listener)
     worker.start()
 
     # Flask app -- callbacks bridge the browser to the worker.

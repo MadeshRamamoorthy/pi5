@@ -546,6 +546,88 @@ body[data-listening="true"] .listening-pill .live-dot {
 .pose-progress h3 { color: var(--accent); margin: 0; }
 .pose-progress .pose-status { color: var(--good); }
 
+/* ---------- chat-voice listen overlay ---------- */
+
+.listen-overlay {
+  background: rgba(6, 14, 28, 0.92);
+}
+.listen-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  color: var(--fg);
+}
+.mic-rings {
+  position: relative;
+  width: 260px; height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mic-rings .ring {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  animation: micRing 2.4s ease-out infinite;
+}
+.mic-rings .ring.r2 { animation-delay: 0.8s; }
+.mic-rings .ring.r3 { animation-delay: 1.6s; }
+@keyframes micRing {
+  0%   { transform: scale(0.35); opacity: 0.9; }
+  90%  { transform: scale(1);    opacity: 0;   }
+  100% { transform: scale(1);    opacity: 0;   }
+}
+.mic-rings .mic-core {
+  width: 110px; height: 110px;
+  background: var(--accent);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 40px var(--accent-50);
+  animation: micCorePulse 1.5s ease-in-out infinite;
+  position: relative;
+}
+@keyframes micCorePulse {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 40px var(--accent-50); }
+  50%      { transform: scale(1.05); box-shadow: 0 0 60px var(--accent);    }
+}
+.listen-label {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.listen-hint {
+  font-size: 14px;
+  color: var(--fg-dim);
+  letter-spacing: 0.04em;
+}
+
+/* While listening, the camera image and corner brackets are hidden;
+   the chat-voice overlay sits on top and the user shouldn't see the
+   feed underneath. */
+body[data-listening="true"] #camera-stream,
+body[data-listening="true"] .camera-frame .corner,
+body[data-listening="true"] .camera-frame .scan-line,
+body[data-listening="true"] .camera-placeholder { display: none; }
+
+/* ---------- pose progress on active screen ---------- */
+
+.pose-card {
+  position: absolute;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 540px;
+  padding: 16px 22px;
+}
+.pose-card h3 { color: var(--accent); margin: 0; font-size: 16px; }
+.pose-card p { margin: 4px 0; color: var(--fg); font-size: 15px; }
+.pose-card .pose-status { color: var(--good); font-size: 14px; }
+
 /* ---------- chat ---------- */
 
 .chat-log {
