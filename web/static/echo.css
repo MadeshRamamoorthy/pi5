@@ -31,18 +31,29 @@ html, body {
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Designed for a fixed 1280x800 kiosk frame. Both screens lock to that
+   size; the body centres them and clips anything that would overflow
+   on smaller windows. On displays larger than 1280x800 the frame sits
+   centred against the background. */
+.screen {
+  width: 1280px;
+  height: 800px;
+  flex-shrink: 0;
 }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .screen {
-  width: 100vw;
-  height: 100vh;
-  padding: 36px 56px;
+  padding: 28px 40px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   position: relative;
 }
 
@@ -131,8 +142,8 @@ a:hover { text-decoration: underline; }
 
 .wake-banner {
   text-align: center;
-  padding: 28px;
-  font-size: 28px;
+  padding: 22px;
+  font-size: 24px;
   letter-spacing: 0.01em;
 }
 .wake-banner .mic-icon {
@@ -468,63 +479,10 @@ body[data-listening="true"] .listening-pill .live-dot {
   cursor: pointer;
 }
 
-/* ---------- responsive: 10.1" kiosk panels (1280x800, 1024x600) ---------- */
-
-/* Mid-size: most 10.1" panels (1280x800). */
-@media (max-width: 1366px), (max-height: 820px) {
-  .screen { padding: 18px 24px; gap: 12px; }
-  .dashboard-header .logo .wave { font-size: 26px; }
-  .dashboard-header .logo .brand { font-size: 22px; }
-  .clock { font-size: 14px; }
-  .wake-banner { font-size: 20px; padding: 16px; }
-  .wake-banner .mic-icon { width: 28px; height: 28px; font-size: 14px; margin-right: 10px; }
-  .weather { gap: 14px; padding: 14px 18px; }
-  .weather-icon { font-size: 40px; }
-  .weather-text .temp { font-size: 26px; }
-  .weather-text .city { font-size: 13px; }
-  .weather-text .humidity { font-size: 13px; }
-  .hi5 { padding: 14px 18px; }
-  .hi5 h3 { font-size: 17px; }
-  .hi5 p { font-size: 13px; margin: 2px 0; }
-  .card { padding: 14px 18px; }
-  .card h2 { font-size: 13px; }
-  .projects ul { gap: 4px 18px; }
-  .projects li { font-size: 14px; padding: 4px 0 4px 18px; }
-  .projects li::before { width: 6px; height: 6px; top: 10px; }
-  .session h3 { font-size: 18px; }
-  .session p { font-size: 14px; }
-  footer { font-size: 13px; }
-
-  /* Active screen tightening */
-  .active-header .brand { font-size: 17px; }
-  .status-strip { gap: 14px; font-size: 13px; }
-  .close-x { width: 30px; height: 30px; font-size: 14px; }
-  .camera-viewport .corner { width: 44px; height: 44px; }
-  .fun-fact { margin-bottom: 64px; padding: 14px 18px; }
-  .fun-fact h3 { font-size: 14px; }
-  .fun-fact p { font-size: 14px; }
-  .listening-pill { bottom: 16px; padding: 10px 22px; font-size: 16px; }
-}
-
-/* Tight: 7"-10.1" panels around 1024x600 / 1280x720. */
-@media (max-width: 1100px), (max-height: 720px) {
-  .screen { padding: 12px 16px; gap: 8px; }
-  .dashboard-header .logo .brand { font-size: 18px; }
-  .dashboard-header .logo .wave { font-size: 20px; }
-  .clock { font-size: 12px; }
-  .wake-banner { font-size: 16px; padding: 10px 14px; }
-  .wake-banner .mic-icon { width: 22px; height: 22px; font-size: 12px; }
-  .weather-icon { font-size: 32px; }
-  .weather-text .temp { font-size: 22px; }
-  .hi5 h3 { font-size: 15px; }
-  .card { padding: 10px 14px; }
-  .card h2 { font-size: 12px; }
-  .projects ul { grid-template-columns: 1fr; gap: 2px; }
-  .projects li { font-size: 13px; padding: 3px 0 3px 16px; }
-  .session h3 { font-size: 15px; }
-  .session p { font-size: 13px; }
-  footer { font-size: 12px; }
-  .listening-pill { font-size: 14px; padding: 8px 18px; bottom: 12px; }
-  .fun-fact { margin-bottom: 56px; }
-  .camera-viewport .corner { width: 32px; height: 32px; }
+/* If the actual display is smaller than 1280x800, scale the whole
+   screen down via a CSS transform so the user still sees the full
+   layout. JS sets --kiosk-scale based on window.innerWidth/Height. */
+.screen {
+  transform-origin: top left;
+  transform: scale(var(--kiosk-scale, 1));
 }

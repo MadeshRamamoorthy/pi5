@@ -18,6 +18,19 @@
   button { cursor: pointer; padding: 4px 12px; }
   .danger { color: #b00; }
   .empty { color: #888; padding: 24px; text-align: center; }
+
+  /* tabs */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid #ddd;
+          margin-top: 24px; }
+  .tab-btn { background: transparent; border: 0; padding: 10px 18px;
+             font-size: 14px; color: #666; cursor: pointer;
+             border-bottom: 3px solid transparent; }
+  .tab-btn.active { color: #1a1a1a; border-bottom-color: #00a4cc;
+                    font-weight: 600; }
+  .tab-btn:hover { color: #1a1a1a; }
+  .tab-panel { display: none; padding-top: 16px; }
+  .tab-panel.active { display: block; }
+  .tab-panel h2 { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -27,6 +40,13 @@
 
 <p id="metrics" class="sub" style="margin-top: 12px;">Loading metrics…</p>
 
+<div class="tabs">
+  <button class="tab-btn active" data-tab="projects">Projects</button>
+  <button class="tab-btn"        data-tab="sessions">Sessions</button>
+  <button class="tab-btn"        data-tab="employees">Employees</button>
+</div>
+
+<section class="tab-panel active" data-panel="projects">
 <h2>Projects</h2>
 <table id="projects-table">
   <thead><tr><th>#</th><th>Title</th><th>Description</th><th>Order</th><th></th></tr></thead>
@@ -40,17 +60,9 @@
     <td><button type="submit">Add</button></td>
   </tr></table>
 </form>
+</section>
 
-<h2>Employees (registered faces)</h2>
-<table id="employees-table">
-  <thead><tr><th>ID</th><th>Name</th><th>Samples</th><th>Registered</th><th></th></tr></thead>
-  <tbody></tbody>
-</table>
-<p class="sub" style="margin-top: 6px;">
-  To register a new person, use the kiosk: wake it up, stand in front of the
-  camera, and follow the on-screen registration overlay.
-</p>
-
+<section class="tab-panel" data-panel="sessions">
 <h2>Sessions</h2>
 <table id="sessions-table">
   <thead><tr><th>#</th><th>Title</th><th>Starts</th><th>Ends</th><th>Notes</th><th></th></tr></thead>
@@ -65,6 +77,19 @@
     <td><button type="submit">Add</button></td>
   </tr></table>
 </form>
+</section>
+
+<section class="tab-panel" data-panel="employees">
+<h2>Employees (registered faces)</h2>
+<table id="employees-table">
+  <thead><tr><th>ID</th><th>Name</th><th>Samples</th><th>Registered</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<p class="sub" style="margin-top: 6px;">
+  To register a new person, use the kiosk: wake it up, stand in front of
+  the camera, and follow the on-screen registration overlay.
+</p>
+</section>
 
 <script>
 async function refresh() {
@@ -171,6 +196,17 @@ document.getElementById("add-session").addEventListener("submit", async (ev) => 
   f.reset(); refresh();
 });
 refresh();
+
+// Tab switching.
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const name = btn.dataset.tab;
+    document.querySelectorAll(".tab-btn").forEach(b =>
+      b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tab-panel").forEach(p =>
+      p.classList.toggle("active", p.dataset.panel === name));
+  });
+});
 </script>
 </body>
 </html>

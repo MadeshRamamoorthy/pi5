@@ -10,6 +10,17 @@
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+  // Designed for a fixed 1280x800 kiosk frame. If the window is smaller
+  // (or larger and we want fill), scale the screens via CSS transform.
+  function fitScale() {
+    const sx = window.innerWidth / 1280;
+    const sy = window.innerHeight / 800;
+    const s = Math.min(sx, sy);   // letterbox; never crop content
+    document.documentElement.style.setProperty("--kiosk-scale", s);
+  }
+  fitScale();
+  window.addEventListener("resize", fitScale);
+
   // Local mirror of the backend state. Seeded by /api/state on load
   // and updated by /events diffs.
   let state = {};
