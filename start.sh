@@ -22,6 +22,21 @@ set -euo pipefail
 
 # ---- Defaults (edit these once for your machine) -------------------------
 : "${PI5_DIR:=/home/echo/Documents/code/pi5}"
+
+# ---- Local config (.env) -------------------------------------------------
+# If a .env file exists in PI5_DIR, source it so the user can keep their
+# OpenAI key + admin password + any other knobs in one git-ignored file
+# rather than editing this script. Run `cp .env.example .env` once,
+# then `nano .env` to fill in the values.
+if [[ -f "$PI5_DIR/.env" ]]; then
+    set -a       # auto-export every variable sourced below
+    # shellcheck disable=SC1091
+    source "$PI5_DIR/.env"
+    set +a
+    ECHO_ENV_LOADED=1
+else
+    ECHO_ENV_LOADED=0
+fi
 : "${SD_DEVICE:=1}"
 : "${AUDIO_OUTPUT_DEVICE:=plughw:CARD=PowerConf,DEV=0}"
 : "${EXTRA_ARGS:=--auto-register}"
@@ -209,6 +224,16 @@ fi
 echo "---------------------------------------------------------------"
 echo " ECHO SCOPE kiosk"
 echo "   project    : $PI5_DIR"
+if [[ "$ECHO_ENV_LOADED" == 1 ]]; then
+    echo "   config     : .env loaded"
+else
+    echo "   config     : (no .env -- copy .env.example to .env to set keys)"
+fi
+if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    echo "   openai     : key set (***${OPENAI_API_KEY: -4})"
+else
+    echo "   openai     : no key -- chat will fall back to hailo-ollama"
+fi
 echo "   mic        : sounddevice index $SD_DEVICE"
 echo "   speaker    : $AUDIO_OUTPUT_DEVICE"
 echo "   web URL    : $KIOSK_URL"

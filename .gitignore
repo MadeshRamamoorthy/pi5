@@ -7,3 +7,6 @@ faces.db
 faces.db-journal
 models/*.hef
 .DS_Store
+# Local secrets / config overrides -- never committed.
+.env
+.env.local

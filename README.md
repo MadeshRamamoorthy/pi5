@@ -674,7 +674,13 @@ session.`
 Setup OpenAI:
 
 ```bash
-echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
+# Preferred: copy the env template and edit it. start.sh sources .env
+# automatically before launch.
+cp .env.example .env
+nano .env                          # set OPENAI_API_KEY=sk-...
+
+# Alternative: bashrc export. Either works.
+# echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
 exec bash
 ./start.sh
 ```
