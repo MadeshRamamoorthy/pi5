@@ -82,9 +82,15 @@ class WakeWordListener:
         except Exception as exc:  # noqa: BLE001
             raise WakeWordError(f"could not query input device: {exc}")
 
-        grammar = json.dumps(self._phrases + ["[unk]"])
+        self._grammar = json.dumps(self._phrases + ["[unk]"])
         self._model = vosk.Model(str(model_dir))
-        self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate, grammar)
+        # The recognizer is rebuilt fresh in _run() every time we open
+        # a new stream session. That avoids the "FinalizeDecoding then
+        # BestPathEnd" race that crashed the thread after a chat-voice
+        # pause / resume cycle.
+        self._recognizer = vosk.KaldiRecognizer(
+            self._model, self.target_rate, self._grammar,
+        )
         self._paused = threading.Event()
 
         self._activated = threading.Event()
@@ -121,12 +127,9 @@ class WakeWordListener:
 
         sounddevice talks to ALSA directly on the Pi -- two streams on
         the same card collide -- so we have to fully release it.
-        Call resume() to reopen."""
+        Call resume() to reopen. The recognizer is rebuilt on resume,
+        so no Reset() is needed here."""
         self._paused.set()
-        try:
-            self._recognizer.Reset()
-        except Exception:
-            pass
 
     def resume(self) -> None:
         self._paused.clear()
@@ -150,6 +153,14 @@ class WakeWordListener:
             if self._paused.is_set():
                 time.sleep(0.1)
                 continue
+            # Build a fresh recognizer for each stream session. Vosk's
+            # KaldiRecognizer doesn't survive Reset() + new audio cleanly
+            # after FinalizeDecoding has fired -- a pause/resume cycle
+            # leaves it half-finalised and the next AcceptWaveform
+            # throws "Failed to process waveform".
+            self._recognizer = vosk.KaldiRecognizer(
+                self._model, self.target_rate, self._grammar,
+            )
             try:
                 stream = sd.RawInputStream(
                     samplerate=self.native_rate,
@@ -170,13 +181,27 @@ class WakeWordListener:
                     self._queue.get_nowait()
             except queue.Empty:
                 pass
-            with stream:
-                while not self._stop.is_set() and not self._paused.is_set():
-                    try:
-                        data = self._queue.get(timeout=0.2)
-                    except queue.Empty:
-                        continue
-                    self._consume(data)
+            try:
+                with stream:
+                    while not self._stop.is_set() and not self._paused.is_set():
+                        try:
+                            data = self._queue.get(timeout=0.2)
+                        except queue.Empty:
+                            continue
+                        try:
+                            self._consume(data)
+                        except Exception as exc:  # noqa: BLE001
+                            # A wedged recognizer shouldn't bring down
+                            # the whole thread. Drop the chunk, break
+                            # out of the inner loop, and the next
+                            # iteration rebuilds the recognizer fresh.
+                            print(f"[wake-word] consume failed, "
+                                   f"recovering: {exc!r}", flush=True)
+                            break
+            except Exception as exc:  # noqa: BLE001
+                print(f"[wake-word] stream loop crashed, "
+                       f"recovering: {exc!r}", flush=True)
+                time.sleep(0.3)
             # stream is closed here -- ALSA device released for chat voice
 
     def _consume(self, data: bytes) -> None:
