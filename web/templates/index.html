@@ -241,7 +241,15 @@
           <label>Name
             <input type="text" id="register-name" autocomplete="off" required>
           </label>
-          <button type="submit">Register</button>
+          <label class="file-label">
+            Photo upload <span class="optional">(optional — skip live capture)</span>
+            <input type="file" id="register-photos" accept="image/*" multiple>
+          </label>
+          <div id="register-photo-hint" class="photo-hint" hidden></div>
+          <div class="form-actions">
+            <button type="button" class="btn-secondary" id="register-skip">No thanks</button>
+            <button type="submit" class="btn-primary">Register</button>
+          </div>
         </form>
       </div>
     </div>

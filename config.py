@@ -150,6 +150,9 @@ IDLE_AFTER_LAST_INTERACTION_SEC = 30
 # least this long after the last chat message. Gives the user time to
 # read the answer and ask a follow-up without the kiosk dropping out.
 CHAT_KEEPALIVE_SEC = 120
+# After the user taps "No thanks" on the auto-register prompt, don't
+# re-open it for this many seconds even if their face is still unknown.
+REGISTER_DECLINE_COOLDOWN_SEC = 120
 # Backwards-compat alias used by older code paths.
 SLEEP_AFTER_NO_LIVE_FACE_SEC = IDLE_AFTER_LAST_INTERACTION_SEC
 # Hard back-stop on any single ACTIVE session.

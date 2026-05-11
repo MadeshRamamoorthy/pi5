@@ -166,7 +166,7 @@ class CameraWorker(threading.Thread):
     daemon = True
 
     def __init__(self, db, state, frames, tts, chat, greeter, learner,
-                 register_queue, chat_queue, wake_event,
+                 register_queue, photo_register_queue, chat_queue, wake_event,
                  args, listener=None):
         super().__init__(name="camera-worker")
         self.db = db
@@ -177,6 +177,7 @@ class CameraWorker(threading.Thread):
         self.greeter = greeter
         self.learner = learner
         self.register_q = register_queue
+        self.photo_register_q = photo_register_queue
         self.chat_q = chat_queue
         self.wake_event = wake_event
         self.listener = listener
@@ -185,6 +186,10 @@ class CameraWorker(threading.Thread):
         self.pipe = None
         self.liveness = LivenessChecker()
         self._stop = threading.Event()
+        # When the user explicitly says "no thanks" to registration, we
+        # don't re-pop the overlay for this long. Otherwise the unknown-
+        # face streak would re-open it immediately.
+        self._register_declined_at = 0.0
 
     def stop(self):
         self._stop.set()
@@ -255,9 +260,27 @@ class CameraWorker(threading.Thread):
             try:
                 while True:
                     req = self.register_q.get_nowait()
+                    # "Skip" sentinel: user declined. Close overlay,
+                    # start the decline cooldown so we don't immediately
+                    # re-open from the unknown-face streak.
+                    if isinstance(req, dict) and req.get("action") == "skip":
+                        self._register_declined_at = time.time()
+                        self.state.update(register_open=False,
+                                          register_pose=None)
+                        continue
                     if kiosk_state != "ACTIVE":
                         continue
                     self._run_registration(req)
+                    emp_ids, names, matrix = self.db.load_all()
+                    last_interaction_at = time.time()
+            except queue.Empty:
+                pass
+
+            # ---- process photo-based registration (from web upload) -
+            try:
+                while True:
+                    req = self.photo_register_q.get_nowait()
+                    self._run_photo_registration(req)
                     emp_ids, names, matrix = self.db.load_all()
                     last_interaction_at = time.time()
             except queue.Empty:
@@ -318,10 +341,14 @@ class CameraWorker(threading.Thread):
                 if biggest_quality_unknown:
                     last_interaction_at = time.time()
                     unknown_streak += 1
+                    declined_recently = (
+                        time.time() - self._register_declined_at
+                    ) < config.REGISTER_DECLINE_COOLDOWN_SEC
                     if (self.args.auto_register
                             and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
                             and not snap.get("register_open")
-                            and not snap.get("chat_pending")):
+                            and not snap.get("chat_pending")
+                            and not declined_recently):
                         unknown_streak = 0
                         self.state.update(
                             register_open=True,
@@ -454,6 +481,55 @@ class CameraWorker(threading.Thread):
                 register_pose=None,
                 register_message=f"Welcome, {name}!",
             )
+
+    def _run_photo_registration(self, req: dict):
+        """Register from one or more uploaded photos -- no pose capture.
+
+        req = {"emp_id": str, "name": str, "photos": [bytes, ...]}
+        """
+        import cv2
+        emp_id = req["emp_id"]
+        name = req["name"]
+        photos = req.get("photos") or []
+        if not photos:
+            return
+
+        embeddings = []
+        for blob in photos:
+            arr = np.frombuffer(blob, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            # Mirror Picamera2 colour order: BGR (cv2) -> RGB.
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            dets = self.pipe.detect(
+                img, config.DETECTOR_SCORE_THRESHOLD, config.DETECTOR_NMS_IOU,
+            )
+            det = largest_detection(dets)
+            if det is None:
+                continue
+            aligned = align_face(img, det.landmarks)
+            embeddings.append(self.pipe.embed(aligned))
+
+        self.state.update(register_open=False, register_pose=None)
+        if not embeddings:
+            self.greeter.say(
+                "Hmm, I couldn't see a clear face in those photos. "
+                "Want to try with a different one?"
+            )
+            return
+
+        is_existing = self.db.employee_exists(emp_id)
+        if is_existing:
+            for e in embeddings:
+                self.db.add_embedding(emp_id, e)
+        else:
+            self.db.add_employee(emp_id, name, embeddings)
+        confirm = messages.random_registration_prompt(
+            "confirm_registration", name=name,
+        )
+        self.greeter.say(confirm)
+        self.state.update(register_message=f"Welcome, {name}!")
 
     def _capture_with_prompts(self):
         embeddings = []
@@ -644,6 +720,7 @@ def main():
 
     wake_event = threading.Event()
     register_q: queue.Queue = queue.Queue()
+    photo_register_q: queue.Queue = queue.Queue()
     chat_q: queue.Queue = queue.Queue()
 
     # Wake-word listener.
@@ -694,8 +771,8 @@ def main():
 
     # Worker thread.
     worker = CameraWorker(db, state, frames, tts, chat, greeter, learner,
-                          register_q, chat_q, wake_event, args,
-                          listener=listener)
+                          register_q, photo_register_q, chat_q,
+                          wake_event, args, listener=listener)
     worker.start()
 
     # Flask app -- callbacks bridge the browser to the worker.
@@ -704,6 +781,12 @@ def main():
 
     def request_register(payload):
         register_q.put(payload)
+
+    def request_register_photo(payload):
+        photo_register_q.put(payload)
+
+    def request_register_skip():
+        register_q.put({"action": "skip"})
 
     def request_chat(question):
         # Route chat questions through the same chat_q the chat-voice
@@ -721,6 +804,8 @@ def main():
     app = create_app(state, frames, db,
                      request_wake=request_wake,
                      request_register=request_register,
+                     request_register_photo=request_register_photo,
+                     request_register_skip=request_register_skip,
                      request_chat=request_chat,
                      listen_start=listen_start,
                      listen_stop=listen_stop)

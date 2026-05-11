@@ -538,6 +538,61 @@ body[data-listening="true"] .listening-pill .live-dot {
   cursor: pointer;
 }
 
+.overlay-card .form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+.overlay-card .form-actions .btn-primary {
+  margin-top: 0;
+}
+.overlay-card .btn-secondary {
+  padding: 12px 22px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 16px;
+  cursor: pointer;
+}
+.overlay-card .btn-secondary:hover {
+  color: var(--fg);
+  border-color: var(--accent-50);
+}
+
+.overlay-card .file-label .optional {
+  color: var(--fg-dim);
+  font-weight: 400;
+  font-size: 12px;
+  margin-left: 4px;
+}
+.overlay-card input[type=file] {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+.overlay-card input[type=file]::file-selector-button {
+  background: rgba(0, 212, 255, 0.10);
+  color: var(--accent);
+  border: 1px solid var(--accent-50);
+  border-radius: 6px;
+  padding: 6px 12px;
+  margin-right: 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.photo-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--good);
+}
+
 .pose-progress {
   margin-top: 18px;
   padding-top: 18px;

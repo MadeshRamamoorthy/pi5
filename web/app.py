@@ -21,6 +21,8 @@ def create_app(
     db,                           # FaceDB
     request_wake: Callable[[], None],
     request_register: Callable[[dict], None],
+    request_register_photo: Callable[[dict], None],
+    request_register_skip: Callable[[], None],
     request_chat: Callable[[str], None],
     listen_start: Callable[[], None],
     listen_stop: Callable[[], None],
@@ -114,6 +116,36 @@ def create_app(
         if not emp_id or not name:
             return ("emp_id and name required", 400)
         request_register({"emp_id": emp_id, "name": name})
+        return ("", 204)
+
+    @app.route("/api/register/photo", methods=["POST"])
+    def api_register_photo():
+        """Multipart: emp_id, name, photos[]. Skips pose capture --
+        each uploaded photo becomes one embedding."""
+        emp_id = (request.form.get("emp_id") or "").strip()
+        name = (request.form.get("name") or "").strip()
+        if not emp_id or not name:
+            return ("emp_id and name required", 400)
+        photos = request.files.getlist("photos")
+        if not photos:
+            return ("at least one photo file required", 400)
+        blobs = []
+        for f in photos:
+            data = f.read()
+            if data:
+                blobs.append(data)
+        if not blobs:
+            return ("uploaded photos are empty", 400)
+        request_register_photo(
+            {"emp_id": emp_id, "name": name, "photos": blobs}
+        )
+        return ("", 204)
+
+    @app.route("/api/register/skip", methods=["POST"])
+    def api_register_skip():
+        """User declined the auto-register prompt. Close the overlay and
+        cool down the auto-pop trigger so we don't immediately re-open."""
+        request_register_skip()
         return ("", 204)
 
     # -------- projects (admin) -------------------------------------------
