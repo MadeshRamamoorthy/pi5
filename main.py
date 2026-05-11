@@ -611,19 +611,32 @@ def main():
     listener: WakeWordListener | None = None
     if not args.no_wake_word:
         try:
+            # Print every Vosk hypothesis so it's obvious WHY the wake
+            # word isn't firing -- accent / phrasing / mic positioning
+            # are usually the cause and were previously invisible.
+            _last_partial = [""]
+
+            def _on_partial(text: str):
+                if text and text != _last_partial[0]:
+                    _last_partial[0] = text
+                    print(f"[wake-word] partial: {text!r}", flush=True)
+
+            def _on_final(text: str):
+                print(f"[wake-word] FINAL  : {text!r}", flush=True)
+                _last_partial[0] = ""
+
             listener = WakeWordListener(
                 config.VOSK_MODEL_DIR, config.WAKE_WORD,
                 samplerate=config.WAKE_WORD_SAMPLERATE,
+                on_partial=_on_partial,
+                on_final=_on_final,
             )
-
-            def _on_wake_word():
-                wake_event.set()
-            # The listener publishes via the _activated Event already.
             listener.start()
             # Poll thread: convert listener.is_activated() to wake_event.
             threading.Thread(target=_poll_wake, args=(listener, wake_event),
                               daemon=True).start()
-            print(f"[wake-word] listening for: '{config.WAKE_WORD}'")
+            phrases = ", ".join(repr(p) for p in listener._phrases)
+            print(f"[wake-word] listening for any of: {phrases}")
         except WakeWordError as exc:
             print(f"[wake-word] disabled: {exc}")
 

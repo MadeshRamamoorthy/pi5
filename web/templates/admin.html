@@ -23,7 +23,9 @@
 <body>
 
 <h1>ECHO SCOPE — admin</h1>
-<p class="sub">Projects appear on the idle dashboard; sessions populate the "Upcoming Session" card.</p>
+<p class="sub">Projects appear on the idle dashboard; sessions populate the "Upcoming Session" card; employees are the registered faces.</p>
+
+<p id="metrics" class="sub" style="margin-top: 12px;">Loading metrics…</p>
 
 <h2>Projects</h2>
 <table id="projects-table">
@@ -38,6 +40,16 @@
     <td><button type="submit">Add</button></td>
   </tr></table>
 </form>
+
+<h2>Employees (registered faces)</h2>
+<table id="employees-table">
+  <thead><tr><th>ID</th><th>Name</th><th>Samples</th><th>Registered</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<p class="sub" style="margin-top: 6px;">
+  To register a new person, use the kiosk: wake it up, stand in front of the
+  camera, and follow the on-screen registration overlay.
+</p>
 
 <h2>Sessions</h2>
 <table id="sessions-table">
@@ -56,6 +68,36 @@
 
 <script>
 async function refresh() {
+  // metrics first so people see something quickly.
+  try {
+    const m = await fetch("/api/metrics").then(r => r.json());
+    document.getElementById("metrics").innerHTML =
+      `Total interactions: <b>${m.total}</b> · today: <b>${m.today}</b> · ` +
+      `this week: <b>${m.week}</b> · best day: <b>${m.best_day || "—"}` +
+      `${m.best_day ? ` (${m.best_count})` : ""}</b>`;
+  } catch (e) { /* ignore */ }
+
+  // Employees.
+  try {
+    const employees = await fetch("/api/employees").then(r => r.json());
+    const etb = document.querySelector("#employees-table tbody");
+    etb.innerHTML = "";
+    if (!employees.length) {
+      etb.innerHTML = '<tr><td colspan="5" class="empty">No employees registered yet.</td></tr>';
+    } else for (const e of employees) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td><code>${escape(e.emp_id)}</code></td>
+        <td>${escape(e.name)}</td>
+        <td>${e.samples}</td>
+        <td>${escape(e.created_at || "")}</td>
+        <td>
+          <button onclick="renameEmp('${escape(e.emp_id)}', '${escape(e.name)}')">Rename</button>
+          <button onclick="delEmp('${escape(e.emp_id)}')" class="danger">Delete</button>
+        </td>`;
+      etb.appendChild(tr);
+    }
+  } catch (e) { /* ignore */ }
+
   const projects = await fetch("/api/projects").then(r => r.json());
   const ptb = document.querySelector("#projects-table tbody");
   ptb.innerHTML = "";
@@ -85,6 +127,21 @@ function escape(s) {
 async function del(kind, id) {
   if (!confirm("Delete?")) return;
   await fetch(`/api/${kind}/${id}`, { method: "DELETE" });
+  refresh();
+}
+async function delEmp(emp_id) {
+  if (!confirm(`Delete employee ${emp_id} and all face samples?`)) return;
+  await fetch(`/api/employees/${encodeURIComponent(emp_id)}`,
+              { method: "DELETE" });
+  refresh();
+}
+async function renameEmp(emp_id, current) {
+  const name = prompt(`Rename ${emp_id}:`, current);
+  if (!name || name === current) return;
+  await fetch(`/api/employees/${encodeURIComponent(emp_id)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
   refresh();
 }
 document.getElementById("add-project").addEventListener("submit", async (ev) => {

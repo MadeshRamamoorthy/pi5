@@ -80,6 +80,19 @@ export SD_DEVICE
 export AUDIO_OUTPUT_DEVICE
 export OPENAI_API_KEY
 
+# ---- Admin credentials ---------------------------------------------------
+# Required to reach /admin. If unset we generate a short random password
+# at every launch so the page is always behind auth. Set KIOSK_ADMIN_PASS
+# in ~/.bashrc or systemd unit to make it stable across restarts.
+: "${KIOSK_ADMIN_USER:=admin}"
+if [[ -z "${KIOSK_ADMIN_PASS:-}" ]]; then
+    KIOSK_ADMIN_PASS="$(python -c 'import secrets; print(secrets.token_urlsafe(6))')"
+    ADMIN_PASS_GENERATED=1
+else
+    ADMIN_PASS_GENERATED=0
+fi
+export KIOSK_ADMIN_USER KIOSK_ADMIN_PASS
+
 # ---- Hailo-Ollama (offline-only fallback chat backend) -------------------
 # Online OpenAI is the preferred backend. Hailo-Ollama is the offline
 # fallback -- runs LLM inference on the Hailo-10H. It also holds 2-3 GB
@@ -200,6 +213,12 @@ echo "   mic        : sounddevice index $SD_DEVICE"
 echo "   speaker    : $AUDIO_OUTPUT_DEVICE"
 echo "   web URL    : $KIOSK_URL"
 echo "   backend log: $KIOSK_BACKEND_LOG"
+if [[ "$ADMIN_PASS_GENERATED" == 1 ]]; then
+    echo "   admin user : $KIOSK_ADMIN_USER"
+    echo "   admin pass : $KIOSK_ADMIN_PASS    (generated -- set KIOSK_ADMIN_PASS to pin)"
+else
+    echo "   admin auth : $KIOSK_ADMIN_USER (KIOSK_ADMIN_PASS from env)"
+fi
 echo "   args       : $EXTRA_ARGS $*"
 echo "---------------------------------------------------------------"
 

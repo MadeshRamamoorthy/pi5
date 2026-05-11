@@ -205,6 +205,39 @@ def create_app(
         })
         return ("", 204) if ok else ("no change", 400)
 
+    # -------- employees (admin) ------------------------------------------
+
+    @app.route("/api/employees", methods=["GET"])
+    def api_emp_list():
+        if not _check_admin_auth():
+            return _request_admin_auth()
+        rows = db.list_employees()
+        return jsonify([
+            {"emp_id": r[0], "name": r[1], "samples": r[2], "created_at": r[3]}
+            for r in rows
+        ])
+
+    @app.route("/api/employees/<emp_id>", methods=["POST", "DELETE"])
+    def api_emp_edit(emp_id):
+        if not _check_admin_auth():
+            return _request_admin_auth()
+        if request.method == "DELETE":
+            if not db.delete_employee(emp_id):
+                return ("not found", 404)
+            return ("", 204)
+        body = request.get_json(silent=True) or {}
+        new_name = (body.get("name") or "").strip()
+        if not new_name:
+            return ("name required", 400)
+        if not db.employee_exists(emp_id):
+            return ("not found", 404)
+        db.conn.execute(
+            "UPDATE employees SET name = ? WHERE emp_id = ?",
+            (new_name, emp_id),
+        )
+        db.conn.commit()
+        return ("", 204)
+
     # -------- metrics ----------------------------------------------------
 
     @app.route("/api/metrics")
@@ -225,18 +258,23 @@ def create_app(
 
 
 def _check_admin_auth() -> bool:
-    user = os.environ.get("KIOSK_ADMIN_USER")
+    user = os.environ.get("KIOSK_ADMIN_USER") or "admin"
     pw = os.environ.get("KIOSK_ADMIN_PASS")
-    # If unset, admin is open -- fine for kiosk-local LAN. Set both env
-    # vars in production deployments.
-    if not user or not pw:
-        return True
+    if not pw:
+        # No password configured -- refuse rather than silently allow.
+        # start.sh generates a random one at launch if the user didn't
+        # provide one, so this path only hits when somebody bypassed
+        # the launcher.
+        return False
     auth = request.authorization
     return bool(auth and auth.username == user and auth.password == pw)
 
 
 def _request_admin_auth():
     return Response(
-        "Authentication required", 401,
+        "Admin authentication required.\n"
+        "If you didn't set KIOSK_ADMIN_PASS yourself, look at the\n"
+        "'admin pass:' line in the start.sh banner.",
+        401,
         {"WWW-Authenticate": 'Basic realm="ECHO SCOPE admin"'},
     )
