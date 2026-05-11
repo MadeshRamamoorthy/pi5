@@ -569,14 +569,25 @@ class CameraWorker(threading.Thread):
     def _run_photo_registration(self, req: dict):
         """Register from one or more uploaded photos -- no pose capture.
 
-        req = {"emp_id": str, "name": str, "photos": [bytes, ...]}
+        req = {"emp_id": str, "name": str, "photos": [bytes, ...],
+               "silent": bool}
+
+        When silent=True (admin uploads), we skip all TTS / toast
+        announcements -- the kiosk speaker shouldn't pipe up while an
+        admin is doing back-office work.
         """
         import cv2
         emp_id = req["emp_id"]
         name = req["name"]
         photos = req.get("photos") or []
+        silent = bool(req.get("silent"))
         if not photos:
             return
+
+        def announce(text: str) -> None:
+            print(f"[photo-register] {text}")
+            if not silent:
+                self.greeter.say(text)
 
         embeddings = []
         for blob in photos:
@@ -595,9 +606,10 @@ class CameraWorker(threading.Thread):
             aligned = align_face(img, det.landmarks)
             embeddings.append(self.pipe.embed(aligned))
 
-        self.state.update(register_open=False, register_pose=None)
+        if not silent:
+            self.state.update(register_open=False, register_pose=None)
         if not embeddings:
-            self.greeter.say(
+            announce(
                 "Hmm, I couldn't see a clear face in those photos. "
                 "Want to try with a different one?"
             )
@@ -612,8 +624,9 @@ class CameraWorker(threading.Thread):
         confirm = messages.random_registration_prompt(
             "confirm_registration", name=name,
         )
-        self.greeter.say(confirm)
-        self.state.update(register_message=f"Welcome, {name}!")
+        announce(confirm)
+        if not silent:
+            self.state.update(register_message=f"Welcome, {name}!")
 
     def _capture_with_prompts(self):
         embeddings = []

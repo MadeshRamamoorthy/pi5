@@ -149,8 +149,11 @@ def create_app(
                 blobs.append(data)
         if not blobs:
             return ("uploaded photos are empty", 400)
+        # Admin uploads go through silently -- the kiosk speaker
+        # should stay quiet while an admin is doing back-office work.
         request_register_photo(
-            {"emp_id": emp_id, "name": name, "photos": blobs}
+            {"emp_id": emp_id, "name": name, "photos": blobs,
+             "silent": True}
         )
         return ("", 204)
 
