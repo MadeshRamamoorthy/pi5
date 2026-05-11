@@ -42,6 +42,18 @@ CREATE TABLE IF NOT EXISTS interactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
+CREATE INDEX IF NOT EXISTS idx_interactions_ts ON interactions(ts);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    starts_at   TIMESTAMP NOT NULL,
+    ends_at     TIMESTAMP,
+    notes       TEXT,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_starts ON sessions(starts_at);
 """
 
 
@@ -237,6 +249,96 @@ class FaceDB:
             (session_id,),
         ).fetchone()
         return int(row[0]) if row else 0
+
+    def interaction_count_today(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM interactions "
+            "WHERE date(ts, 'localtime') = date('now', 'localtime')"
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def interaction_count_this_week(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM interactions "
+            "WHERE ts >= datetime('now', '-7 days')"
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def interaction_best_day(self) -> tuple[str | None, int]:
+        """Returns (weekday_name, count) of the historical best day,
+        or (None, 0) if no interactions yet."""
+        row = self.conn.execute(
+            "SELECT strftime('%w', ts, 'localtime') AS dow, "
+            "       date(ts, 'localtime') AS d, "
+            "       COUNT(*) AS c "
+            "FROM interactions "
+            "GROUP BY d ORDER BY c DESC LIMIT 1"
+        ).fetchone()
+        if not row or not row[0]:
+            return (None, 0)
+        days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        try:
+            name = days[int(row[0])]
+        except (ValueError, IndexError):
+            name = None
+        return (name, int(row[2]))
+
+    # ---- sessions (upcoming events on the idle dashboard) --------------
+
+    def list_sessions(self, upcoming_only: bool = True):
+        if upcoming_only:
+            return self.conn.execute(
+                "SELECT id, title, starts_at, ends_at, notes "
+                "FROM sessions WHERE starts_at >= datetime('now', '-1 hour') "
+                "ORDER BY starts_at"
+            ).fetchall()
+        return self.conn.execute(
+            "SELECT id, title, starts_at, ends_at, notes "
+            "FROM sessions ORDER BY starts_at DESC"
+        ).fetchall()
+
+    def next_session(self):
+        return self.conn.execute(
+            "SELECT id, title, starts_at, ends_at, notes "
+            "FROM sessions WHERE starts_at >= datetime('now') "
+            "ORDER BY starts_at LIMIT 1"
+        ).fetchone()
+
+    def add_session(self, title: str, starts_at: str,
+                    ends_at: str | None = None, notes: str = "") -> int:
+        cur = self.conn.execute(
+            "INSERT INTO sessions (title, starts_at, ends_at, notes) "
+            "VALUES (?, ?, ?, ?)",
+            (title, starts_at, ends_at, notes),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def update_session(self, session_id: int, *, title: str | None = None,
+                       starts_at: str | None = None,
+                       ends_at: str | None = None,
+                       notes: str | None = None) -> bool:
+        sets, vals = [], []
+        for col, val in (("title", title), ("starts_at", starts_at),
+                          ("ends_at", ends_at), ("notes", notes)):
+            if val is not None:
+                sets.append(f"{col} = ?")
+                vals.append(val)
+        if not sets:
+            return False
+        vals.append(session_id)
+        cur = self.conn.execute(
+            f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", vals,
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_session(self, session_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM sessions WHERE id = ?", (session_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
 
 def _to_blob(vec: np.ndarray) -> bytes:

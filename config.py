@@ -132,7 +132,9 @@ TTS_PREBUFFER_MS = 500
 AUDIO_OUTPUT_DEVICE: str | None = os.environ.get("AUDIO_OUTPUT_DEVICE") or None
 
 # ---- Wake-word / activation -----------------------------------------------
-WAKE_WORD = "hello echo"          # phrase that activates recognition
+BRAND_NAME = "ECHO SCOPE"
+CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
+WAKE_WORD = "hello echo scope"    # phrase that activates recognition
 WAKE_WORD_SAMPLERATE = 16000
 WAKE_WORD_BLOCKSIZE = 8000
 # Drop back to IDLE this long after the last *interaction* (a new person
@@ -161,6 +163,12 @@ WINDOW_SIZE = (1280, 720)        # (width, height)
 PANEL_WIDTH = 540
 
 # ---- Weather widget -------------------------------------------------------
+KIOSK_HOST = "127.0.0.1"
+KIOSK_PORT = 8080
+FUN_FACT_ROTATE_SEC = 15
+MJPEG_QUALITY = 80                # JPEG quality for the camera stream
+MJPEG_MAX_FPS = 20                # display only; detection runs at full rate
+
 WEATHER_REFRESH_SEC = 1800        # 30 minutes
 WEATHER_LATITUDE = None           # set both to skip IP geolocation
 WEATHER_LONGITUDE = None
