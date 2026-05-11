@@ -347,15 +347,29 @@ class CameraWorker(threading.Thread):
             except queue.Empty:
                 pass
 
-            # ---- recognition (only in ACTIVE) ----------------
-            biggest_quality_unknown = False
-            dets = self.pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
-                                    config.DETECTOR_NMS_IOU)
-            biggest = largest_detection(dets)
-            # label entries: (det, text, color_bgr)
-            face_labels: list[tuple] = []
+            # Skip face detection / recognition while a chat exchange
+            # is in flight (listening or awaiting reply). The camera
+            # feed still streams to the SPA (so the user sees themselves
+            # if the listen overlay isn't covering it), but no Hailo
+            # cycles get spent on a face that isn't going to be acted on.
+            snap_chat = self.state.snapshot()
+            chat_busy = bool(
+                snap_chat.get("chat_pending") or snap_chat.get("listening")
+            )
+            if chat_busy:
+                unknown_streak = 0          # don't pop register mid-chat
 
-            if kiosk_state == "ACTIVE":
+            # ---- recognition (only in ACTIVE, and only while idle) ----
+            biggest_quality_unknown = False
+            dets = []
+            biggest = None
+            face_labels: list[tuple] = []
+            if not chat_busy:
+                dets = self.pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
+                                        config.DETECTOR_NMS_IOU)
+                biggest = largest_detection(dets)
+
+            if kiosk_state == "ACTIVE" and not chat_busy:
                 # Liveness can be turned off entirely via config; when
                 # disabled we treat every quality face as live and skip
                 # both the sliding-window analysis and the per-face
@@ -400,18 +414,28 @@ class CameraWorker(threading.Thread):
                         if det is biggest:
                             biggest_quality_unknown = True
 
-            # Draw boxes + names on the frame, then publish to MJPEG.
+            # Publish to MJPEG. Overlays only when we actually ran
+            # detection -- otherwise we just push the raw frame so the
+            # feed doesn't go static.
             if kiosk_state == "ACTIVE":
-                _draw_overlays(frame, face_labels)
+                if not chat_busy:
+                    _draw_overlays(frame, face_labels)
                 self.frames.push(frame)
 
                 for emp_id, name, _det, _score in pending_greets:
+                    # Once we've greeted someone in this session, don't
+                    # do it again -- even if they walk in and out of
+                    # frame, the cooldown was meant to throttle spam
+                    # but it still re-greets after GREET_COOLDOWN_SEC.
+                    # seen_in_session is the per-session source of truth.
+                    if emp_id in seen_in_session:
+                        last_known_emp_id = emp_id
+                        continue
                     if self.greeter.greet(emp_id, name):
                         last_interaction_at = time.time()
-                        if emp_id not in seen_in_session:
-                            seen_in_session.add(emp_id)
-                            self.db.record_interaction(emp_id, session_id)
-                            self._push_metrics()
+                        seen_in_session.add(emp_id)
+                        self.db.record_interaction(emp_id, session_id)
+                        self._push_metrics()
                         last_known_emp_id = emp_id
 
                 # Auto-open the register overlay for new visitors.
