@@ -2,151 +2,224 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=1280, initial-scale=1, user-scalable=no">
 <title>{{ brand }}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='echo.css') }}">
 </head>
 <body data-state="IDLE">
 
-<!-- ================= IDLE DASHBOARD ================= -->
-<main id="idle" class="screen">
+<div class="bg-grad"></div>
+<div id="starfield" class="starfield" aria-hidden="true"></div>
 
-  <header class="dashboard-header">
-    <div class="logo">
-      <span class="wave">👋</span>
-      <span class="brand">I'M {{ brand }}</span>
-      <span class="ring" aria-hidden="true"></span>
-    </div>
-    <div class="clock" data-bind="clock-long">—</div>
-  </header>
+<main id="frame" class="frame">
 
-  <section class="wake-banner glow card">
-    <span class="mic-icon">🎙</span>
-    <strong>Say '<span data-bind="wake-phrase">Hello {{ brand }}!</span>' to talk to me!</strong>
-  </section>
+  <!-- ================= IDLE DASHBOARD ================= -->
+  <section id="idle" class="screen idle">
 
-  <section class="row two-col">
-    <article class="card weather">
-      <span class="weather-icon" data-bind="weather-icon">☀</span>
-      <div class="weather-text">
-        <span class="temp" data-bind="weather-temp">—</span>
-        <span class="city" data-bind="weather-city">—</span>
-        <span class="humidity"><span class="drop">💧</span><span data-bind="weather-humidity">—</span></span>
+    <header class="idle-header">
+      <div class="logo">
+        <span class="wave">👋</span>
+        <span class="brand">I'M {{ brand }}</span>
+        <svg class="soundwave" viewBox="0 0 40 40" width="40" height="40" fill="none">
+          <circle cx="20" cy="20" r="6"  stroke="#00D4FF" stroke-width="2" opacity="1"/>
+          <circle cx="20" cy="20" r="12" stroke="#00D4FF" stroke-width="2" opacity="0.6"/>
+          <circle cx="20" cy="20" r="18" stroke="#00D4FF" stroke-width="2" opacity="0.3"/>
+        </svg>
       </div>
-    </article>
-    <article class="card hi5">
-      <h3><span class="emoji">👋</span> <span data-bind="hi5-today">0</span> hi-5s today</h3>
-      <p>This week: <span data-bind="hi5-week">0</span></p>
-      <p>Best day: <span data-bind="hi5-best">—</span></p>
-    </article>
-  </section>
+      <div class="clock" data-bind="clock-long">—</div>
+    </header>
 
-  <article class="card projects">
-    <h2><span class="emoji">💡</span> CALGARY AI FILES ON DISPLAY TODAY</h2>
-    <ul class="two-col-list" data-bind-list="projects">
-      <li class="placeholder">No projects on display yet.</li>
-    </ul>
-  </article>
-
-  <article class="card session">
-    <h2><span class="emoji">📅</span> UPCOMING SESSION</h2>
-    <div data-bind-block="session">
-      <h3 data-bind="session-title">—</h3>
-      <p data-bind="session-when">—</p>
-    </div>
-    <p class="placeholder" data-bind-show-if-empty="session">No upcoming sessions scheduled.</p>
-  </article>
-
-  <footer>
-    <span class="q">❓</span> Questions? <a href="mailto:{{ contact }}">{{ contact }}</a>
-    <span class="admin-link"> · <a href="/admin" target="_blank">admin</a></span>
-  </footer>
-</main>
-
-<!-- ================= ACTIVE CAMERA ================= -->
-<main id="active" class="screen" hidden>
-
-  <header class="active-header">
-    <div class="logo">
-      <span class="brand">{{ brand }}</span>
-      <span class="ring" aria-hidden="true"></span>
-    </div>
-    <div class="status-strip">
-      <span><span class="thermo">🌡</span> <span data-bind="weather-temp-short">—</span></span>
-      <span><span class="emoji">👋</span> <span data-bind="hi5-today">0</span></span>
-      <span class="clock" data-bind="clock-short">—</span>
-      <button class="close-x" id="close-active" aria-label="Close">✕</button>
-    </div>
-  </header>
-
-  <section class="camera-viewport">
-    <span class="corner tl"></span>
-    <span class="corner tr"></span>
-    <span class="corner bl"></span>
-    <span class="corner br"></span>
-    <img id="camera-stream" alt="" />
-    <div class="camera-placeholder" data-bind-show-if="!camera_ready">
-      <span class="cam-icon">📷</span>
-      <span class="cam-state">Camera: Active</span>
-    </div>
-  </section>
-
-  <article class="card fun-fact">
-    <h3>
-      <span data-bind="fact-icon">💡</span>
-      <span data-bind="fact-type">AI FUN FACT</span>
-    </h3>
-    <p data-bind="fact-content">Welcome.</p>
-  </article>
-
-  <button class="listening-pill" id="listen-toggle">
-    <span class="mic-icon">🎙</span>
-    <span data-bind="listen-label">Tap to speak</span>
-    <span class="live-dot"></span>
-  </button>
-
-  <!-- Toast for "Hello, NAME!" -->
-  <div id="toast" class="toast" hidden></div>
-
-  <!-- Chat overlay (placeholder; styling to be finalised later) -->
-  <div id="chat-overlay" class="overlay" hidden>
-    <div class="overlay-card">
-      <header>
-        <h2><span class="emoji">💬</span> Chat</h2>
-        <button class="close-x" id="chat-close" aria-label="Close">✕</button>
-      </header>
-      <div class="chat-log" id="chat-log"></div>
-      <form id="chat-form">
-        <input type="text" id="chat-input" placeholder="Ask anything…" autocomplete="off">
-        <button type="submit">Send</button>
-      </form>
-    </div>
-  </div>
-
-  <!-- Registration overlay -->
-  <div id="register-overlay" class="overlay" hidden>
-    <div class="overlay-card">
-      <header>
-        <h2><span class="emoji">👋</span> Nice to meet you!</h2>
-        <button class="close-x" id="register-close" aria-label="Close">✕</button>
-      </header>
-      <p data-bind="register-message">Pop your details below so I remember you next time.</p>
-      <form id="register-form">
-        <label>Employee ID
-          <input type="text" id="register-emp-id" autocomplete="off" required>
-        </label>
-        <label>Name
-          <input type="text" id="register-name" autocomplete="off" required>
-        </label>
-        <button type="submit">Register</button>
-      </form>
-      <div class="pose-progress" id="register-pose" hidden>
-        <h3>Pose <span id="pose-idx">1</span>/<span id="pose-total">5</span></h3>
-        <p id="pose-prompt">—</p>
-        <p class="status" id="pose-status">—</p>
+    <div class="wake-row">
+      <div class="card glass pulse wake-banner">
+        <div class="mic-circle">
+          <svg viewBox="0 0 16 20" width="16" height="20" fill="white">
+            <path d="M8 0C6.34 0 5 1.34 5 3V10C5 11.66 6.34 13 8 13C9.66 13 11 11.66 11 10V3C11 1.34 9.66 0 8 0ZM13.91 9C13.91 12.04 11.3 14.5 8 14.5C4.7 14.5 2.09 12.04 2.09 9H0.18C0.18 12.53 2.94 15.45 6.4 15.92V20H9.6V15.92C13.06 15.45 15.82 12.53 15.82 9H13.91Z"/>
+          </svg>
+        </div>
+        <span class="wake-text">
+          Say '<span data-bind="wake-phrase">Hello {{ brand }}!</span>' to talk to me!
+        </span>
       </div>
     </div>
-  </div>
+
+    <div class="stat-row">
+      <div class="card glass weather-card">
+        <span class="weather-sun" aria-hidden="true">
+          <svg viewBox="0 0 48 48" width="48" height="48" fill="#00D4FF" stroke="#00D4FF" stroke-width="2">
+            <circle cx="24" cy="24" r="8" fill="#00D4FF"/>
+            <g stroke-linecap="round">
+              <line x1="24" y1="3"  x2="24" y2="11"/>
+              <line x1="24" y1="37" x2="24" y2="45"/>
+              <line x1="3"  y1="24" x2="11" y2="24"/>
+              <line x1="37" y1="24" x2="45" y2="24"/>
+              <line x1="9"  y1="9"  x2="15" y2="15"/>
+              <line x1="33" y1="33" x2="39" y2="39"/>
+              <line x1="9"  y1="39" x2="15" y2="33"/>
+              <line x1="33" y1="15" x2="39" y2="9"/>
+            </g>
+          </svg>
+        </span>
+        <div class="weather-text">
+          <span class="temp" data-bind="weather-temp">—</span>
+          <span class="city" data-bind="weather-city">—</span>
+          <span class="humidity">💧 <span data-bind="weather-humidity">—</span></span>
+        </div>
+      </div>
+
+      <div class="card glass hi5-card">
+        <span class="hi5-emoji" aria-hidden="true">👋</span>
+        <div class="hi5-text">
+          <div class="hi5-today"><span data-bind="hi5-today">0</span> hi-5s today</div>
+          <div class="hi5-week">This week: <span data-bind="hi5-week">0</span></div>
+          <div class="hi5-best">Best day: <span data-bind="hi5-best">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card glass projects-card">
+      <div class="card-title">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18h6"/><path d="M10 22h4"/>
+          <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/>
+        </svg>
+        <h2>CALGARY AI FILES ON DISPLAY TODAY</h2>
+      </div>
+      <ul class="projects-grid" data-bind-list="projects">
+        <li class="placeholder"><span class="dot dot-dim"></span>No projects on display yet.</li>
+      </ul>
+    </div>
+
+    <div class="card glass session-card">
+      <div class="card-title">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+          <line x1="16" y1="2"  x2="16" y2="6"/>
+          <line x1="8"  y1="2"  x2="8"  y2="6"/>
+          <line x1="3"  y1="10" x2="21" y2="10"/>
+        </svg>
+        <h2>UPCOMING SESSION</h2>
+      </div>
+      <div data-bind-block="session">
+        <div class="session-title" data-bind="session-title">—</div>
+        <div class="session-when" data-bind="session-when">—</div>
+      </div>
+      <p class="placeholder-text" data-bind-show-if-empty="session">No upcoming sessions scheduled.</p>
+    </div>
+
+    <footer class="idle-footer">
+      <span class="q">❓</span> Questions?
+      <a href="mailto:{{ contact }}">{{ contact }}</a>
+      <span class="admin-link"> · <a href="/admin" target="_blank">admin</a></span>
+    </footer>
+  </section>
+
+  <!-- ================= ACTIVE CAMERA ================= -->
+  <section id="active" class="screen active" hidden>
+
+    <header class="active-header">
+      <div class="logo">
+        <span class="brand active-brand">{{ brand }}</span>
+        <svg class="soundwave" viewBox="0 0 40 40" width="30" height="30" fill="none">
+          <circle cx="20" cy="20" r="6"  stroke="#00D4FF" stroke-width="2" opacity="1"/>
+          <circle cx="20" cy="20" r="12" stroke="#00D4FF" stroke-width="2" opacity="0.6"/>
+          <circle cx="20" cy="20" r="18" stroke="#00D4FF" stroke-width="2" opacity="0.3"/>
+        </svg>
+      </div>
+      <div class="status-strip">
+        <span class="thermo">🌡️ <span data-bind="weather-temp-short">—</span></span>
+        <span class="hi5-mini">🙋 <span data-bind="hi5-today">0</span></span>
+        <span class="clock" data-bind="clock-short">—</span>
+        <button class="close-x" id="close-active" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6"  x2="6"  y2="18"/>
+            <line x1="6"  y1="6"  x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="active-body">
+
+      <div class="camera-frame glass">
+        <span class="corner tl"></span>
+        <span class="corner tr"></span>
+        <span class="corner bl"></span>
+        <span class="corner br"></span>
+        <span class="scan-line" aria-hidden="true"></span>
+        <img id="camera-stream" alt="" />
+        <div class="camera-placeholder">
+          <svg viewBox="0 0 64 64" width="64" height="64" fill="none" stroke="#00D4FF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19l-2 4H8a3 3 0 0 0-3 3v26a3 3 0 0 0 3 3h48a3 3 0 0 0 3-3V26a3 3 0 0 0-3-3H43l-2-4h-18z"/>
+            <circle cx="32" cy="37" r="11"/>
+          </svg>
+          <div class="cam-status">Camera: Active</div>
+        </div>
+      </div>
+
+      <div class="card glass fun-fact" data-fact-kind="fact">
+        <div class="card-title">
+          <span class="fact-emoji" data-bind="fact-icon">💡</span>
+          <h3 data-bind="fact-type">AI FUN FACT</h3>
+        </div>
+        <p data-bind="fact-content">Welcome to ECHO SCOPE.</p>
+      </div>
+
+      <button class="listening-pill" id="listen-toggle">
+        <span class="mic-emoji">🎤</span>
+        <span data-bind="listen-label">Tap to speak</span>
+        <span class="live-dot" aria-hidden="true"></span>
+      </button>
+
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- Chat overlay (placeholder until styled later) -->
+    <div id="chat-overlay" class="overlay" hidden>
+      <div class="overlay-card glass">
+        <header>
+          <h2>💬 Chat</h2>
+          <button class="close-x" id="chat-close" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </header>
+        <div class="chat-log" id="chat-log"></div>
+        <form id="chat-form">
+          <input type="text" id="chat-input" placeholder="Ask anything…" autocomplete="off">
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Registration overlay -->
+    <div id="register-overlay" class="overlay" hidden>
+      <div class="overlay-card glass">
+        <header>
+          <h2>👋 Nice to meet you!</h2>
+          <button class="close-x" id="register-close" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </header>
+        <p data-bind="register-message">Pop your details below so I remember you next time.</p>
+        <form id="register-form">
+          <label>Employee ID
+            <input type="text" id="register-emp-id" autocomplete="off" required>
+          </label>
+          <label>Name
+            <input type="text" id="register-name" autocomplete="off" required>
+          </label>
+          <button type="submit">Register</button>
+        </form>
+        <div class="pose-progress" id="register-pose" hidden>
+          <h3>Pose <span id="pose-idx">1</span>/<span id="pose-total">5</span></h3>
+          <p id="pose-prompt">—</p>
+          <p class="pose-status" id="pose-status">—</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
 </main>
 
 <script src="{{ url_for('static', filename='echo.js') }}"></script>

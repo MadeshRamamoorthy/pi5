@@ -7,40 +7,55 @@
 (() => {
   "use strict";
 
-  const $ = (sel) => document.querySelector(sel);
+  const $  = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-  // Designed for a fixed 1280x800 kiosk frame. If the window is smaller
-  // (or larger and we want fill), scale the screens via CSS transform.
+  // Designed for a fixed 1280x800 kiosk frame. If the actual display is
+  // smaller, scale the frame down via CSS transform so the layout never
+  // wraps or crops.
   function fitScale() {
-    const sx = window.innerWidth / 1280;
+    const sx = window.innerWidth  / 1280;
     const sy = window.innerHeight / 800;
-    const s = Math.min(sx, sy);   // letterbox; never crop content
+    const s  = Math.min(sx, sy);
     document.documentElement.style.setProperty("--kiosk-scale", s);
   }
   fitScale();
   window.addEventListener("resize", fitScale);
 
-  // Local mirror of the backend state. Seeded by /api/state on load
-  // and updated by /events diffs.
-  let state = {};
+  // ---- starfield --------------------------------------------------------
+  // 100 small cyan dots at random positions twinkling at random rates.
+  (function buildStarfield() {
+    const sf = document.getElementById("starfield");
+    if (!sf) return;
+    const N = 100;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < N; i++) {
+      const star = document.createElement("div");
+      star.className = "star";
+      const size = Math.random() * 2 + 1;
+      star.style.width  = size + "px";
+      star.style.height = size + "px";
+      star.style.left   = (Math.random() * 100) + "%";
+      star.style.top    = (Math.random() * 100) + "%";
+      star.style.animationDuration = (Math.random() * 3 + 2) + "s";
+      frag.appendChild(star);
+    }
+    sf.appendChild(frag);
+  })();
 
-  // ============================== bootstrap
+  // ---- state mirror ------------------------------------------------------
+
+  let state = {};
 
   fetch("/api/state")
     .then(r => r.json())
     .then(s => { applyState(s); subscribeEvents(); })
     .catch(err => {
       console.error("initial state fetch failed", err);
-      // Retry in 2s
       setTimeout(() => location.reload(), 2000);
     });
 
-  // Local clock tick (server also pushes now_epoch every few s, but
-  // ticking locally keeps the display smooth).
   setInterval(() => paintClocks(new Date()), 1000);
-
-  // ============================== SSE
 
   function subscribeEvents() {
     const es = new EventSource("/events");
@@ -53,24 +68,22 @@
         console.error("bad SSE payload", e, ev.data);
       }
     };
-    es.onerror = (e) => {
-      console.warn("SSE error -- reconnecting in 2s", e);
+    es.onerror = () => {
       es.close();
       setTimeout(subscribeEvents, 2000);
     };
   }
 
-  // ============================== state -> DOM
-
   function applyState(diff) {
     Object.assign(state, diff);
     if ("state" in diff) {
       document.body.dataset.state = diff.state;
-      $("#idle").hidden = diff.state !== "IDLE";
+      $("#idle").hidden   = diff.state !== "IDLE";
       $("#active").hidden = diff.state !== "ACTIVE";
     }
     if ("listening" in diff) {
       document.body.dataset.listening = diff.listening ? "true" : "false";
+      bind("listen-label", diff.listening ? "Listening..." : "Tap to speak");
     }
     if ("weather" in diff)        renderWeather(diff.weather);
     if ("metrics" in diff)        renderMetrics(diff.metrics);
@@ -78,12 +91,14 @@
     if ("next_session" in diff)   renderSession(diff.next_session);
     if ("fun_fact" in diff)       renderFunFact(diff.fun_fact);
     if ("toast" in diff)          renderToast(diff.toast);
-    if ("wake_phrase" in diff)    $$('[data-bind="wake-phrase"]').forEach(e => e.textContent = `Hello ${diff.wake_phrase.replace(/^hello\s+/i, "")}!`);
-    if ("register_open" in diff)  $("#register-overlay").hidden = !diff.register_open;
+    if ("wake_phrase" in diff) {
+      const phrase = `Hello ${diff.wake_phrase.replace(/^hello\s+/i, "")}!`;
+      $$('[data-bind="wake-phrase"]').forEach(e => e.textContent = phrase);
+    }
+    if ("register_open" in diff)    $("#register-overlay").hidden = !diff.register_open;
     if ("register_message" in diff) bind("register-message", diff.register_message);
-    if ("register_pose" in diff)  renderRegisterPose(diff.register_pose);
-    if ("chat_history" in diff)   renderChatLog(diff.chat_history);
-    if ("listening" in diff)      bind("listen-label", diff.listening ? "Listening..." : "Tap to speak");
+    if ("register_pose" in diff)    renderRegisterPose(diff.register_pose);
+    if ("chat_history" in diff)     renderChatLog(diff.chat_history);
   }
 
   function bind(name, value) {
@@ -93,49 +108,40 @@
   }
 
   function paintClocks(d) {
-    const opts = { weekday: "short", month: "short", day: "numeric",
-                   hour: "numeric", minute: "2-digit", hour12: true };
-    bind("clock-long", d.toLocaleString("en-US", opts));
+    bind("clock-long", d.toLocaleString("en-US", {
+      weekday: "short", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit", hour12: true,
+    }));
     bind("clock-short", d.toLocaleString("en-US", {
       hour: "numeric", minute: "2-digit", hour12: true,
     }));
   }
 
-  // ---- weather
+  // ---- weather ----------------------------------------------------------
 
-  const WEATHER_ICONS = {
-    "Clear": "☀️", "Mostly clear": "🌤️", "Partly cloudy": "⛅",
-    "Overcast": "☁️", "Fog": "🌫", "Rime fog": "🌫",
-    "Drizzle": "🌦️", "Rain": "🌧️", "Heavy rain": "⛈",
-    "Showers": "🌦️", "Heavy showers": "⛈",
-    "Snow": "❄️", "Heavy snow": "❄️", "Snow grains": "❄️",
-    "Thunderstorm": "⛈", "Freezing rain": "🌨️",
-  };
   function renderWeather(w) {
     if (!w || !w.ok) {
-      bind("weather-icon", "❓");
       bind("weather-temp", "—");
       bind("weather-temp-short", "—");
       bind("weather-humidity", "—");
       bind("weather-city", "—");
       return;
     }
-    bind("weather-icon", WEATHER_ICONS[w.label] || "🌡️");
     bind("weather-temp", `${Math.round(w.temp_c)}°C`);
     bind("weather-temp-short", `${Math.round(w.temp_c)}°C`);
     bind("weather-humidity", w.humidity != null ? `${w.humidity}%` : "—");
     bind("weather-city", w.city || w.label || "—");
   }
 
-  // ---- metrics (hi-5s)
+  // ---- metrics ----------------------------------------------------------
 
   function renderMetrics(m) {
     bind("hi5-today", m.today ?? 0);
-    bind("hi5-week",  `${m.week ?? 0}`);
+    bind("hi5-week",  m.week  ?? 0);
     bind("hi5-best",  m.best_day ? `${m.best_day} (${m.best_count}!)` : "—");
   }
 
-  // ---- projects
+  // ---- projects ---------------------------------------------------------
 
   function renderProjects(list) {
     const ul = $('[data-bind-list="projects"]');
@@ -155,7 +161,7 @@
     }
   }
 
-  // ---- session
+  // ---- session ----------------------------------------------------------
 
   function renderSession(s) {
     const block = document.querySelector('[data-bind-block="session"]');
@@ -184,7 +190,7 @@
       let end = "";
       if (s.ends_at) {
         const e = new Date(s.ends_at.replace(" ", "T"));
-        end = " – " + e.toLocaleTimeString("en-US", {
+        end = "-" + e.toLocaleTimeString("en-US", {
           hour: "numeric", minute: "2-digit", hour12: true,
         });
       }
@@ -194,16 +200,25 @@
     }
   }
 
-  // ---- fun fact
+  // ---- fun fact (rotates between FACT and TIP from backend) -------------
 
   function renderFunFact(f) {
     if (!f) return;
     bind("fact-icon", f.icon || "💡");
     bind("fact-type", f.type || "AI FUN FACT");
     bind("fact-content", f.content || "");
+    const card = document.querySelector(".fun-fact");
+    if (card) {
+      const kind = (f.type || "").toLowerCase().includes("tip") ? "tip" : "fact";
+      card.dataset.factKind = kind;
+      // Replay the fade-in animation.
+      card.style.animation = "none";
+      void card.offsetWidth;
+      card.style.animation = "";
+    }
   }
 
-  // ---- toast
+  // ---- toast ------------------------------------------------------------
 
   let toastTimer = null;
   function renderToast(t) {
@@ -216,20 +231,20 @@
     toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
   }
 
-  // ---- register pose progress
+  // ---- register pose ----------------------------------------------------
 
   function renderRegisterPose(p) {
     const box = $("#register-pose");
     if (!box) return;
     if (!p) { box.hidden = true; return; }
     box.hidden = false;
-    $("#pose-idx").textContent = p.idx ?? "?";
+    $("#pose-idx").textContent   = p.idx   ?? "?";
     $("#pose-total").textContent = p.total ?? "?";
     $("#pose-prompt").textContent = p.prompt ?? "—";
     $("#pose-status").textContent = p.status ?? "";
   }
 
-  // ---- chat log
+  // ---- chat log ---------------------------------------------------------
 
   function renderChatLog(history) {
     const box = $("#chat-log");
@@ -244,31 +259,27 @@
     box.scrollTop = box.scrollHeight;
   }
 
-  // ============================== user input
+  // ---- user input -------------------------------------------------------
 
   // IDLE: tap anywhere wakes the kiosk.
   document.getElementById("idle").addEventListener("click", () => {
     if (state.state === "IDLE") post("/api/wake");
   });
 
-  // Active close (X).
   document.getElementById("close-active").addEventListener("click", (ev) => {
     ev.stopPropagation();
-    // No /api/idle endpoint -- the backend drops to idle after the
-    // configured timeout. Hide active locally so the user sees an
-    // immediate response; a state push will follow.
+    // Optimistically flip locally; the backend's idle timeout sends
+    // an authoritative state update soon after.
     document.body.dataset.state = "IDLE";
-    $("#idle").hidden = false;
+    $("#idle").hidden   = false;
     $("#active").hidden = true;
   });
 
-  // Listening pill.
   document.getElementById("listen-toggle").addEventListener("click", () => {
     if (state.listening) post("/api/listen/stop");
     else                 post("/api/listen/start");
   });
 
-  // Chat overlay
   const chatForm = $("#chat-form");
   if (chatForm) {
     chatForm.addEventListener("submit", (ev) => {
@@ -284,19 +295,16 @@
     $("#chat-overlay").hidden = true;
   });
 
-  // Register overlay
   $("#register-form")?.addEventListener("submit", (ev) => {
     ev.preventDefault();
     const emp_id = $("#register-emp-id").value.trim();
-    const name = $("#register-name").value.trim();
+    const name   = $("#register-name").value.trim();
     if (!emp_id || !name) return;
     postJSON("/api/register", { emp_id, name });
   });
   $("#register-close")?.addEventListener("click", () => {
     $("#register-overlay").hidden = true;
   });
-
-  // ============================== helpers
 
   function post(url) {
     fetch(url, { method: "POST" }).catch(e => console.warn("POST failed", url, e));
@@ -309,18 +317,19 @@
     }).catch(e => console.warn("POST failed", url, e));
   }
 
-  // Once we're active, point the camera <img> at the MJPEG endpoint.
-  // We delay this so the browser doesn't keep an MJPEG socket open
-  // while idle.
+  // ---- MJPEG: only hold the socket while we're ACTIVE ------------------
+
   const camImg = $("#camera-stream");
   let camOn = false;
   setInterval(() => {
     if (state.state === "ACTIVE" && !camOn) {
       camImg.src = "/camera.mjpg?ts=" + Date.now();
       camOn = true;
+      document.body.dataset.cameraOn = "true";
     } else if (state.state === "IDLE" && camOn) {
       camImg.src = "";
       camOn = false;
+      document.body.dataset.cameraOn = "false";
     }
   }, 500);
 })();
