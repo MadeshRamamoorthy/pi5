@@ -347,20 +347,29 @@ body { display: flex; align-items: center; justify-content: center; }
 
 /* The transcript panel is hidden by default. Only visible while chat
    is in play -- listening, awaiting reply, or with non-empty history.
-   In chat mode the camera shrinks to make room. */
+   In chat mode the layout splits 50/50: camera on the left,
+   transcript on the right, both filling the available width equally. */
 .chat-panel { display: none; }
 
+body[data-chat-mode="true"] .active-main {
+  /* Fill the active-body padding box and split 50/50. */
+  width: 100%;
+  align-items: stretch;
+}
+body[data-chat-mode="true"] .camera-frame {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  height: 520px;
+}
 body[data-chat-mode="true"] .chat-panel {
   display: flex;
   flex-direction: column;
-  width: 540px;
-  height: 480px;
-  padding: 16px 18px;
-  flex-shrink: 0;
-}
-body[data-chat-mode="true"] .camera-frame {
-  width: 600px;
-  height: 480px;
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  height: 520px;
+  padding: 18px 22px;
 }
 /* Hide the fun-fact strip while chatting -- the conversation gets the
    full attention. */
