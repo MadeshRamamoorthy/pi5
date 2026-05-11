@@ -5,8 +5,18 @@ like the Anker A3301 don't support 16 kHz directly), resamples to the
 rate Vosk wants, and sets an Event whenever the configured WAKE_WORD
 phrase is heard.
 
-The main loop polls `is_activated()` and clears it via `deactivate()`
-when it wants to drop back to idle.
+Single-concern: this listener only does grammar-restricted wake-word
+detection. Free-form chat dictation runs through `chat_voice.py` with
+Whisper (or a fallback ASR) instead -- the previous implementation that
+swapped this recognizer in and out of "freeform" mode held the entire
+large Vosk model in RAM just to occasionally transcribe a sentence,
+which on a Pi 5 8 GB pushed the system into swap.
+
+API:
+  start() / stop()
+  pause() / resume()              -- free the mic stream temporarily
+                                     so chat voice capture can grab it.
+  is_activated() / deactivate()   -- main loop polls these.
 """
 
 from __future__ import annotations
@@ -14,6 +24,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -60,19 +71,16 @@ class WakeWordListener:
         self.target_rate = samplerate
         self._on_partial = on_partial
         self._on_final = on_final
-        self._chat_on_final = None     # set by set_freeform()
-        self._chat_on_partial = None
-        self._mode = "wake"            # "wake" | "freeform"
 
         try:
             self.device, self.native_rate = pick_input_device(device)
         except Exception as exc:  # noqa: BLE001
             raise WakeWordError(f"could not query input device: {exc}")
 
-        self._grammar = json.dumps([self.keyword, "[unk]"])
+        grammar = json.dumps([self.keyword, "[unk]"])
         self._model = vosk.Model(str(model_dir))
-        self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate, self._grammar)
-        self._lock = threading.Lock()
+        self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate, grammar)
+        self._paused = threading.Event()
 
         self._activated = threading.Event()
         self._stop = threading.Event()
@@ -95,10 +103,6 @@ class WakeWordListener:
     def is_activated(self) -> bool:
         return self._activated.is_set()
 
-    @property
-    def mode(self) -> str:
-        return self._mode
-
     def deactivate(self) -> None:
         self._activated.clear()
         try:
@@ -106,25 +110,21 @@ class WakeWordListener:
         except Exception:
             pass
 
-    def set_freeform(self, on_final, on_partial=None) -> None:
-        """Switch the recognizer out of wake-word grammar mode and into
-        unrestricted dictation. Final transcripts go to `on_final(text)`.
-        Use for the CHAT tab's voice input. Call set_wake() to revert."""
-        with self._lock:
-            self._chat_on_final = on_final
-            self._chat_on_partial = on_partial
-            # Build a no-grammar recognizer so any speech can transcribe.
-            self._recognizer = vosk.KaldiRecognizer(self._model, self.target_rate)
-            self._mode = "freeform"
+    def pause(self) -> None:
+        """Close the mic stream so another component (e.g. chat-voice
+        capture) can open its own InputStream on the same ALSA device.
 
-    def set_wake(self) -> None:
-        with self._lock:
-            self._chat_on_final = None
-            self._chat_on_partial = None
-            self._recognizer = vosk.KaldiRecognizer(
-                self._model, self.target_rate, self._grammar
-            )
-            self._mode = "wake"
+        sounddevice talks to ALSA directly on the Pi -- two streams on
+        the same card collide -- so we have to fully release it.
+        Call resume() to reopen."""
+        self._paused.set()
+        try:
+            self._recognizer.Reset()
+        except Exception:
+            pass
+
+    def resume(self) -> None:
+        self._paused.clear()
 
     # internal -----------------------------------------------------------
 
@@ -140,68 +140,60 @@ class WakeWordListener:
 
     def _run(self) -> None:
         block = max(1, int(self.native_rate / 2))  # ~500 ms blocks
-        try:
-            stream = sd.RawInputStream(
-                samplerate=self.native_rate,
-                blocksize=block,
-                device=self.device,
-                dtype="int16",
-                channels=1,
-                callback=self._audio_cb,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[wake-word] mic open failed at {self.native_rate} Hz on "
-                  f"device={self.device}: {exc}")
-            return
-
-        with stream:
-            while not self._stop.is_set():
-                try:
-                    data = self._queue.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-                self._consume(data)
+        while not self._stop.is_set():
+            # While paused, release the mic and idle.
+            if self._paused.is_set():
+                time.sleep(0.1)
+                continue
+            try:
+                stream = sd.RawInputStream(
+                    samplerate=self.native_rate,
+                    blocksize=block,
+                    device=self.device,
+                    dtype="int16",
+                    channels=1,
+                    callback=self._audio_cb,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[wake-word] mic open failed at {self.native_rate} Hz on "
+                      f"device={self.device}: {exc}")
+                time.sleep(1.0)
+                continue
+            # Drain stale data from prior session.
+            try:
+                while True:
+                    self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            with stream:
+                while not self._stop.is_set() and not self._paused.is_set():
+                    try:
+                        data = self._queue.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+                    self._consume(data)
+            # stream is closed here -- ALSA device released for chat voice
 
     def _consume(self, data: bytes) -> None:
-        with self._lock:
-            recog = self._recognizer
-            mode = self._mode
-            chat_on_final = self._chat_on_final
-            chat_on_partial = self._chat_on_partial
-        if recog.AcceptWaveform(data):
-            text = json.loads(recog.Result()).get("text", "").strip().lower()
-            if mode == "freeform":
-                if text and chat_on_final:
-                    try:
-                        chat_on_final(text)
-                    except Exception:
-                        pass
-                return
+        if self._recognizer.AcceptWaveform(data):
+            text = json.loads(self._recognizer.Result()).get("text", "").strip().lower()
             if text and self._on_final:
                 try:
                     self._on_final(text)
                 except Exception:
                     pass
             # Only fire on FINAL transcripts. Partial results from Vosk's
-            # grammar-restricted recognizer ("hello echo" vs "[unk]") tend
-            # to lock onto the wake phrase before the audio has settled,
-            # producing false positives on ambient speech / clatter. The
-            # final transcript is much more reliable.
+            # grammar-restricted recognizer ("hello echo scope" vs
+            # "[unk]") tend to lock onto the wake phrase before the audio
+            # has settled, producing false positives on ambient speech.
             #
             # Match the *whole* utterance (or the keyword followed by
-            # filler tokens like "the"). A bare substring check would
-            # accept any sentence happening to contain "hello echo".
+            # filler tokens). A bare substring check would accept any
+            # sentence happening to contain the wake phrase.
             if text == self.keyword or text.startswith(self.keyword + " "):
                 self._activated.set()
         else:
-            text = json.loads(recog.PartialResult()).get("partial", "")
-            if mode == "freeform":
-                if text and chat_on_partial:
-                    try:
-                        chat_on_partial(text)
-                    except Exception:
-                        pass
-                return
+            text = json.loads(self._recognizer.PartialResult()).get("partial", "")
             if text and self._on_partial:
                 try:
                     self._on_partial(text)

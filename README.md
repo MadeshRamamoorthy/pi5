@@ -704,9 +704,36 @@ CHAT_BACKEND_ORDER = ("ollama", "openai")   # local-first
 ```
 
 Toggle voice / keyboard input with **`V`** while the chat tab is open;
-voice mode listens via the same Vosk model used for the wake word
+voice mode listens via faster-whisper tiny.en (see §3.x Chat voice)
 (no grammar) and submits when you stop speaking. Replies are spoken
 through the configured TTS backend and shown in the panel.
+
+### 3.6.1 Chat voice (Whisper)
+
+Chat-tab voice input is **not** done by Vosk. It uses a dedicated
+ASR backend selected via `config.CHAT_ASR_BACKEND`:
+
+| Backend           | Footprint                | When to use                        |
+|-------------------|--------------------------|------------------------------------|
+| `faster-whisper`  | ~250 MB resident (lazy)  | Default. Local, no API key.        |
+| `openai`          | ~0 local (HTTP)          | When you already have an API key and want best accuracy. |
+| `vosk`            | shares wake-word model   | Fully-offline fallback; lower quality. |
+
+The wake-word listener (small Vosk model) and chat-voice capture
+**share the mic device**. When you tap the mic icon, the wake-word
+listener releases the ALSA stream, chat-voice opens its own stream
+with VAD (auto-finalises after 1.5 s of silence or 12 s max), runs the
+Whisper backend, and hands the wake-word listener back when done.
+
+Memory: the previous design loaded a 1.8 GB Vosk model just to occasionally
+transcribe chat questions, which combined with Hailo-Ollama pushed the
+Pi 5 into swap and froze the system. The current split (small Vosk for
+wake word + tiny Whisper for chat) reclaims ~2 GB and removes the
+freeze.
+
+Future: see `docs/hailo_asr.md` for notes on running Whisper on the
+Hailo-10H instead of the CPU (deferred — currently no production-ready
+HEF).
 
 ### 3.7 Projects board
 

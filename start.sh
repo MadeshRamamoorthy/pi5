@@ -80,15 +80,21 @@ export SD_DEVICE
 export AUDIO_OUTPUT_DEVICE
 export OPENAI_API_KEY
 
-# ---- Hailo-Ollama (local fallback chat backend) --------------------------
+# ---- Hailo-Ollama (offline-only fallback chat backend) -------------------
 # Online OpenAI is the preferred backend. Hailo-Ollama is the offline
-# fallback -- runs LLM inference on the Hailo-10H, listens on port 8080.
-# We probe the API; if it's down we launch the binary in the background.
-# Failure here is non-fatal: chat just goes through OpenAI.
+# fallback -- runs LLM inference on the Hailo-10H. It also holds 2-3 GB
+# resident *just sitting there*, so on a Pi 5 8 GB we skip starting it
+# when OpenAI is configured. Override with PRELOAD_OLLAMA=1 if you want
+# instant chat replies if/when OpenAI is unreachable.
 # NOTE: hailo-ollama on this Pi binds to :8000. Upstream Ollama uses
 # 11434, and Open WebUI uses 8080 -- override OLLAMA_URL if your build
 # differs.
 : "${OLLAMA_URL:=http://localhost:8000}"
+: "${PRELOAD_OLLAMA:=0}"
+
+if [[ -n "$OPENAI_API_KEY" ]] && [[ "$PRELOAD_OLLAMA" != 1 ]]; then
+    echo "   hailo-ollama : skipped (OpenAI primary; PRELOAD_OLLAMA=1 to start)"
+else
 # Sanity-probe the API by asking for the JSON tag list. /api/tags on
 # real Ollama returns a {"models":[...]} document; uvicorn / Open WebUI
 # returns HTML, which is how we caught the previous misconfiguration.
@@ -100,29 +106,30 @@ ollama_up() {
     return 0
 }
 
-if ollama_up; then
-    echo "   hailo-ollama : up at ${OLLAMA_URL}"
-elif command -v hailo-ollama >/dev/null 2>&1; then
-    echo "   hailo-ollama : not running, launching in background..."
-    : "${HAILO_OLLAMA_LOG:=/tmp/hailo-ollama.log}"
-    # The Pi build runs the daemon by invoking the binary with no args.
-    # Override via HAILO_OLLAMA_CMD if your build uses a subcommand.
-    : "${HAILO_OLLAMA_CMD:=hailo-ollama}"
-    nohup $HAILO_OLLAMA_CMD >"$HAILO_OLLAMA_LOG" 2>&1 &
-    # Wait up to ~10 s for the API to answer.
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        ollama_up && break
-        sleep 1
-    done
     if ollama_up; then
-        echo "   hailo-ollama : up at ${OLLAMA_URL} (log: $HAILO_OLLAMA_LOG)"
+        echo "   hailo-ollama : up at ${OLLAMA_URL}"
+    elif command -v hailo-ollama >/dev/null 2>&1; then
+        echo "   hailo-ollama : not running, launching in background..."
+        : "${HAILO_OLLAMA_LOG:=/tmp/hailo-ollama.log}"
+        # The Pi build runs the daemon by invoking the binary with no args.
+        # Override via HAILO_OLLAMA_CMD if your build uses a subcommand.
+        : "${HAILO_OLLAMA_CMD:=hailo-ollama}"
+        nohup $HAILO_OLLAMA_CMD >"$HAILO_OLLAMA_LOG" 2>&1 &
+        # Wait up to ~10 s for the API to answer.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            ollama_up && break
+            sleep 1
+        done
+        if ollama_up; then
+            echo "   hailo-ollama : up at ${OLLAMA_URL} (log: $HAILO_OLLAMA_LOG)"
+        else
+            echo "   hailo-ollama : failed to start -- see $HAILO_OLLAMA_LOG" >&2
+            echo "                  chat will use OpenAI only (or be unavailable" >&2
+            echo "                  if OPENAI_API_KEY is unset)" >&2
+        fi
     else
-        echo "   hailo-ollama : failed to start -- see $HAILO_OLLAMA_LOG" >&2
-        echo "                  chat will use OpenAI only (or be unavailable" >&2
-        echo "                  if OPENAI_API_KEY is unset)" >&2
+        echo "   hailo-ollama : binary not found in PATH -- offline chat disabled" >&2
     fi
-else
-    echo "   hailo-ollama : binary not found in PATH -- offline chat disabled" >&2
 fi
 
 # Probe X display reliably *after* venv activation -- uses libX11 via
@@ -170,6 +177,13 @@ case "$x_probe" in
         esac
         ;;
 esac
+
+# Warm up the Whisper model in the background so the first real chat
+# voice question doesn't pay the ~3 s model-load cost.
+if grep -q '^CHAT_ASR_BACKEND[[:space:]]*=[[:space:]]*"faster-whisper"' config.py 2>/dev/null; then
+    (python -c "from asr import make_chat_asr; make_chat_asr().warmup()" \
+        >/tmp/echo-whisper-warmup.log 2>&1 &) || true
+fi
 
 echo "---------------------------------------------------------------"
 echo " pi5 face-recognition"

@@ -7,6 +7,9 @@ piper-tts>=1.2.0 ; python_version < "3.13"
 flask>=3.0
 requests>=2.31
 openai>=1.30
+# Local chat-voice transcription. CTranslate2 (used by faster-whisper)
+# ships ARMv8 NEON wheels, so install is fast on the Pi 5.
+faster-whisper>=1.0.0
 # picamera2     -> install via apt: python3-picamera2 (see README §2.3)
 # hailo_platform -> install from the HailoRT cp313 wheel (see README §2.5)
 # vosk model    -> download into models/ (see README §2.8)

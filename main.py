@@ -42,9 +42,11 @@ from picamera2 import Picamera2
 
 import config
 import views
+from asr import make_chat_asr
 from async_tts import AsyncTTS
 from blink import BlinkChecker
 from chat import ChatBackendError, ChatBudgetError, ChatClient
+from chat_voice import ChatVoiceCapture, ChatVoiceCaptureError
 from database import FaceDB
 from hailo_infer import HailoFacePipeline, align_face
 from liveness import LivenessChecker
@@ -624,31 +626,33 @@ def main():
         cv2.namedWindow("Echo AI", cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback("Echo AI", on_mouse)
 
-    # ---- chat voice (free-form ASR) -------------------------------------
-    # Final transcripts from the wake-word listener (when in freeform mode)
-    # land here; the main loop drains the queue and submits them as chat
-    # questions.
+    # ---- chat voice (Whisper-backed dictation) --------------------------
+    # ChatVoiceCapture pauses the wake-word listener, opens its own mic
+    # stream, buffers PCM with VAD, then hands it to a Whisper backend.
+    # Final transcripts land on chat_voice_q for the main loop to drain.
     chat_voice_q: queue.Queue = queue.Queue()
-
-    def _on_chat_voice_final(text: str) -> None:
-        chat_voice_q.put(text)
+    chat_voice: ChatVoiceCapture | None = None
+    try:
+        chat_voice = ChatVoiceCapture(
+            asr=make_chat_asr(),
+            out_queue=chat_voice_q,
+            wake_listener=listener,
+            on_listening_changed=lambda on: setattr(panel, "chat_listening", on),
+        )
+        print(f"[chat-voice] using {config.CHAT_ASR_BACKEND}")
+    except ChatVoiceCaptureError as exc:
+        print(f"[chat-voice] disabled: {exc}")
 
     def start_chat_listening() -> None:
-        if listener is None:
+        if chat_voice is None:
             return
-        if panel.chat_listening:
-            return
-        listener.set_freeform(_on_chat_voice_final)
-        panel.chat_listening = True
+        chat_voice.start()
 
     def stop_chat_listening() -> None:
-        if listener is None:
+        if chat_voice is None:
             panel.chat_listening = False
             return
-        if not panel.chat_listening:
-            return
-        listener.set_wake()
-        panel.chat_listening = False
+        chat_voice.stop()
 
     def go_active(reason: str) -> None:
         nonlocal state, activated_at, last_interaction_at, session_id
@@ -698,14 +702,6 @@ def main():
                             start_chat_listening()
                         if actions.get("stop_listening"):
                             stop_chat_listening()
-
-            # ---- keep listener mode in sync with panel state ------
-            # If anything (tab change, idle-out, etc.) flipped
-            # panel.chat_listening to False, revert the recognizer to
-            # wake-word grammar. Otherwise wake-word detection won't fire.
-            if listener is not None and listener.mode == "freeform" \
-                    and not panel.chat_listening:
-                listener.set_wake()
 
             # ---- drain free-form ASR results -----------------------
             try:

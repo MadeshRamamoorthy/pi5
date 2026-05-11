@@ -5,15 +5,11 @@ ROOT = Path(__file__).resolve().parent
 MODELS_DIR = ROOT / "models"
 DB_PATH = ROOT / "faces.db"
 
-# Vosk model directory. We use the same model for the wake word AND the
-# CHAT tab's free-form dictation, so the larger 0.22 model gives much
-# better chat transcription. Falls back to the small model if the large
-# one isn't downloaded yet.
-VOSK_MODEL_DIR = MODELS_DIR / "vosk-model-en-us-0.22"
-if not VOSK_MODEL_DIR.is_dir():
-    _fallback = MODELS_DIR / "vosk-model-small-en-us-0.15"
-    if _fallback.is_dir():
-        VOSK_MODEL_DIR = _fallback
+# Vosk model directory. We use the SMALL model only -- it's enough for
+# the four-word wake phrase and uses ~200 MB instead of 2-3 GB. Chat
+# free-form dictation goes through Whisper (see CHAT_ASR_BACKEND below)
+# so the big Vosk model isn't needed.
+VOSK_MODEL_DIR = MODELS_DIR / "vosk-model-small-en-us-0.15"
 
 # Hailo-10H compiled models (HEF). Download via the install guide.
 DETECTOR_HEF = MODELS_DIR / "scrfd_10g.hef"
@@ -184,6 +180,31 @@ OLLAMA_MODEL = "qwen3:1.7b"       # qwen3 instruct on Hailo-Ollama; bigger
 CHAT_BACKEND_ORDER = ("openai", "ollama")
 CHAT_MAX_QUESTIONS_PER_SESSION = 5
 CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
+
+# ---- Chat-voice ASR -------------------------------------------------------
+# Wake-word listener stays on the small Vosk model. Long-form chat
+# dictation goes through this separate backend, lazy-loaded so the
+# kiosk doesn't pay the memory bill until the user actually opens
+# chat voice mode.
+#
+#   "faster-whisper" -> CTranslate2 + tiny.en, ~250 MB resident, ~3 s
+#                       per 10 s of speech on Pi 5 CPU. Default.
+#   "openai"         -> openai.audio.transcriptions.create (cloud). No
+#                       local resources but a network round-trip per
+#                       question and a paid API call.
+#   "vosk"           -> legacy: reuse the small Vosk model in a
+#                       no-grammar recognizer. Lower quality, kept as
+#                       an offline fallback.
+CHAT_ASR_BACKEND = "faster-whisper"
+WHISPER_MODEL = "tiny.en"           # "tiny.en" | "base.en" | "small.en"
+WHISPER_DEVICE = "cpu"              # Pi 5 has no GPU; keep "cpu".
+WHISPER_COMPUTE_TYPE = "int8"       # 8-bit quantisation for memory.
+WHISPER_CACHE_DIR = MODELS_DIR / "whisper"
+# Voice capture timing knobs.
+CHAT_VOICE_MAX_SEC = 12.0           # hard cap on a single utterance.
+CHAT_VOICE_SILENCE_SEC = 1.5        # auto-finalise after this much silence.
+CHAT_VOICE_SILENCE_RMS = 350        # int16 RMS threshold below which audio
+                                    # counts as silence.
 
 # ---- Silent learning ------------------------------------------------------
 # When a confidently recognised face passes the quality + liveness gates,
