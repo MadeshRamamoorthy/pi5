@@ -1,78 +1,129 @@
-# Speech recognition on the Hailo-10H — deferred research
+# Speech recognition on the Hailo NPU
 
-This kiosk currently runs free-form speech recognition (the chat tab's
-voice input) on the **CPU** via faster-whisper. The Hailo-10H accelerator
-is reserved for vision (SCRFD + ArcFace) and, separately, the
-Hailo-Ollama LLM daemon. A natural follow-up is asking whether ASR
-could also run on the Hailo chip. The short answer is **not yet** —
-the longer answer is below.
+**Status: production**. Hailo ships pre-compiled Whisper encoder +
+decoder HEFs and a Python pipeline that runs the whole STT path on
+the NPU.
 
-## Why not today
+| Variant | Approx latency on Hailo-10H | Notes |
+|---------|-----------------------------|-------|
+| Whisper-Tiny  | ~150-300 ms | Fastest, lowest accuracy |
+| **Whisper-Base** | **~250-500 ms** | Recommended default |
+| Whisper-Small | ~400-800 ms | Best accuracy, more memory |
 
-1. **No official model.** The Hailo Model Zoo
-   (https://github.com/hailo-ai/hailo_model_zoo) does not ship a
-   compiled Whisper / Wav2Vec / streaming ASR HEF as of HailoRT 5.3.
+vs. our other backends:
 
-2. **Compilation requires the Dataflow Compiler (DFC).** Producing a
-   working HEF from Whisper's PyTorch checkpoint needs Hailo's
-   licensed compiler toolchain. Community ports exist (search
-   `hailo-whisper` on GitHub) but they target older HailoRT versions
-   and have rough edges around encoder / decoder split, KV cache,
-   and streaming.
+| Backend | Latency on a 5 s utterance | Cost |
+|---------|---------------------------|------|
+| **Hailo Whisper-Base** | **~250-500 ms** | $0 |
+| OpenAI Whisper API     | ~1-2 s        | ~$0.0002/min |
+| faster-whisper tiny.en (Pi 5 CPU) | ~3-4 s | $0 |
 
-3. **Chip contention.** The Hailo-10H is already serving
-   `qwen3:1.7b` via Hailo-Ollama for chat replies. The accelerator
-   can multiplex models, but inference is sequential per VDevice — so
-   transcribing while the LLM is mid-response would either preempt
-   the chat (visible latency) or serialise (no benefit over CPU).
+## How the kiosk picks an STT backend
 
-4. **CPU is fine.** faster-whisper tiny.en transcribes a 10-second
-   utterance in ~3–4 s on the Pi 5's Cortex-A76 cluster, using ~250 MB
-   of resident memory. That's already inside the kiosk's response
-   budget (the user is talking; we have time to think).
+`config.CHAT_ASR_BACKEND = "auto"` (the default) goes through this
+precedence:
 
-## What would need to happen
+1. **Hailo Whisper** — chosen when both encoder + decoder HEFs are
+   present on disk. The actual `hailo-apps` import is deferred to
+   first use, so a missing package only fails on the first chat
+   question, not at boot.
+2. **OpenAI Whisper** — chosen when `OPENAI_API_KEY` is set in `.env`
+   or the environment.
+3. **faster-whisper** — pure CPU fallback for fully offline boxes.
 
-For someone picking this back up later:
+Force a specific backend by setting `CHAT_ASR_BACKEND = "hailo"`
+(or `"openai"`, `"faster-whisper"`, `"vosk"`).
 
-1. **Pick a model.** Whisper tiny / base are the obvious candidates.
-   Distil-Whisper is faster but currently English-only.
+## Setup on the Pi
 
-2. **Compile to HEF.** Either wait for an official Hailo Model Zoo
-   release or use the DFC with one of the community recipes. Expect
-   to spend time on tokenisation / chunking / KV-cache plumbing.
+```bash
+# 1. Install hailo-apps (provides the Whisper pipeline class).
+pip install hailo-apps
+# Or clone for the latest tip:
+#   git clone https://github.com/hailo-ai/hailo-apps
+#   pip install -e ./hailo-apps
 
-3. **Schedule with the LLM.** Decide whether ASR and LLM share one
-   VDevice (sequential, simpler) or run on separate VDevices
-   (parallel — uses more chip resources but better latency). The
-   Hailo-10H has 26 TOPS; both fit, but you must size carefully.
+# 2. Download the Whisper-Base HEFs into models/.
+#    Hailo's Model Zoo URL changes occasionally; see
+#    https://github.com/hailo-ai/hailo-apps for the current path
+#    (look in the speech_recognition app's download script).
+cd models/
+wget <whisper-base-encoder.hef URL>
+wget <whisper-base-decoder.hef URL>
+# Rename to match what config.py expects, OR override the paths
+# via HAILO_WHISPER_ENCODER_HEF / HAILO_WHISPER_DECODER_HEF.
 
-4. **Wire into `chat_voice.py`.** Add a `HailoWhisperASR` class
-   alongside `FasterWhisperASR` and select via
-   `config.CHAT_ASR_BACKEND = "hailo-whisper"`. The interface
-   (`transcribe(pcm: bytes, samplerate: int) -> str`) is already
-   designed for this.
+# 3. Verify selection.
+./start.sh
+# In the log, look for:
+#   [asr] auto-selected backend: hailo-whisper
+#   [asr] loading Hailo Whisper base (encoder=..., decoder=...)
+```
 
-5. **Benchmark.** Compare against the CPU baseline. The whole point of
-   moving to Hailo is sub-second transcription; if you're stuck at 2 s
-   the change isn't worth the complexity.
+## Chip-contention reality check
 
-## Benchmark template
+The Hailo-10H currently hosts:
 
-When you do the work, drop a script in `utils/bench_asr.py` that:
+- SCRFD (face detect) + ArcFace (embed) — runs on every camera frame
+  while ACTIVE
+- Hailo-Whisper encoder + decoder — runs during chat exchanges
+- Optionally Hailo-Ollama (`qwen3:1.7b`) — only loaded if
+  `PRELOAD_OLLAMA=1` is set or `OPENAI_API_KEY` is unset
 
-- loads a fixed 10-second WAV from `tests/fixtures/`
-- runs each backend N=20 times
-- prints mean / p50 / p95 latency and resident memory
+In the common case (OpenAI for chat, Hailo for face + Whisper):
 
-That gives an objective number to compare against the current
-~3 s faster-whisper baseline.
+- Face recognition and Whisper rarely overlap. The camera worker
+  *skips* recognition during a chat exchange (the `chat_busy` check in
+  `main.py`), so the NPU is free for Whisper while the user is
+  talking. Whisper completes in <1 s and face recognition resumes
+  immediately.
+
+If you also load Hailo-Ollama, the NPU schedules all three workloads
+serially — workable but adds latency. The kiosk doesn't pre-load
+Ollama when `OPENAI_API_KEY` is set, so usually you don't pay this
+cost.
+
+## Verifying the latency
+
+```bash
+tail -F /tmp/echo-backend.log | grep -E 'asr|chat-voice'
+```
+
+Expected sequence on a chat-voice tap:
+
+```
+[chat-voice] using hailo-whisper
+... user speaks ...
+[asr] loading Hailo Whisper base (encoder=..., decoder=...)
+... ~500 ms ...
+[chat-voice] transcribed: "what's the weather"
+```
+
+If you see `[asr] loading...` *every* utterance, that means the
+pipeline isn't being cached -- it should only print on the first
+chat after each boot.
+
+## What to do if it doesn't work
+
+- Missing HEFs: the wrapper prints the expected file paths and a
+  download hint. Drop the files at those paths and restart.
+- `hailo-apps` import fails: try `pip install hailo-apps` or clone
+  the repo and `pip install -e .`. The wrapper tries three known
+  module paths (`hailo_apps.python.standalone_apps.speech_recognition.
+  whisper_pipeline`, `hailo_apps.speech_recognition.pipeline`,
+  `hailo_whisper.pipeline`) — if Hailo reorganises again, the last
+  ImportError prints clearly in the log and we patch the candidates
+  list in `asr.py`.
+- HailoRT errors at decode: usually means another model is holding
+  the NPU. Check `pgrep -fl hailo-ollama` and stop it if you don't
+  need offline chat.
 
 ## Links
 
-- Hailo Model Zoo: https://github.com/hailo-ai/hailo_model_zoo
-- HailoRT release notes: https://hailo.ai/developer-zone/documentation/
-- faster-whisper benchmarks on Pi 5:
-  https://github.com/SYSTRAN/faster-whisper#benchmark
-- Community Whisper-on-Hailo experiments: search GitHub for
-  `hailo whisper`.
+- [hailo-ai/hailo-apps](https://github.com/hailo-ai/hailo-apps) —
+  primary repo, has the `speech_recognition` standalone app.
+- [hailocs/hailo-whisper](https://github.com/hailocs/hailo-whisper) —
+  original conversion tooling.
+- [Pi 5 + Whisper-Small HEF community
+  thread](https://community.hailo.ai/t/pi-5-whisper-small-hef/18946) —
+  troubleshooting and benchmarks from real Pi 5 users.

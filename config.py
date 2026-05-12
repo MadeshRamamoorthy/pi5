@@ -206,18 +206,28 @@ CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 # kiosk doesn't pay the memory bill until the user actually opens
 # chat voice mode.
 #
-#   "auto"           -> use OpenAI Whisper when OPENAI_API_KEY is set
-#                       (typical 1-2 s round-trip), otherwise fall back
-#                       to faster-whisper. Default.
+#   "auto"           -> precedence: hailo-whisper -> openai -> faster-whisper.
+#                       Hailo wins if the HEFs are on disk; OpenAI wins
+#                       if OPENAI_API_KEY is set; otherwise local CPU.
+#                       Default.
+#   "hailo"          -> Hailo NPU Whisper-Base via hailo-apps. ~200-700 ms
+#                       per utterance on Hailo-10H, $0, fully local.
+#                       Needs:
+#                         pip install hailo-apps
+#                         + encoder/decoder HEFs in models/ (see docs/
+#                           hailo_asr.md for download instructions)
 #   "faster-whisper" -> CTranslate2 + tiny.en, ~250 MB resident, ~3-4 s
 #                       per 10 s of speech on Pi 5 CPU.
-#   "openai"         -> openai.audio.transcriptions.create (cloud). No
-#                       local resources but a network round-trip per
-#                       question and a paid API call.
-#   "vosk"           -> legacy: reuse the small Vosk model in a
-#                       no-grammar recognizer. Lower quality, kept as
-#                       an offline fallback.
+#   "openai"         -> openai.audio.transcriptions.create (cloud).
+#                       ~1-2 s round-trip, paid per minute.
+#   "vosk"           -> legacy: small Vosk model in a no-grammar recognizer.
+#                       Lower quality, kept as a fully-offline fallback.
 CHAT_ASR_BACKEND = "auto"
+
+# Hailo Whisper config. The "auto" path looks here first.
+HAILO_WHISPER_MODEL = "base"        # "tiny" | "base" | "small"
+HAILO_WHISPER_ENCODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-encoder.hef"
+HAILO_WHISPER_DECODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-decoder.hef"
 WHISPER_MODEL = "tiny.en"           # "tiny.en" | "base.en" | "small.en"
 WHISPER_DEVICE = "cpu"              # Pi 5 has no GPU; keep "cpu".
 WHISPER_COMPUTE_TYPE = "int8"       # 8-bit quantisation for memory.
