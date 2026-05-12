@@ -1,1007 +1,787 @@
-# Echo AI Kiosk — Pi 5 + Hailo-10H
+# ECHO SCOPE
 
-A face-recognising kiosk for the Pi 5 (8 GB) using the **Pi AI Camera**
-(IMX500) and a **Hailo-10H M.2** accelerator. The screen shows a blue
-"Welcome to Echo AI" banner with live weather (top-right) and a lifetime
-interaction counter (bottom-right) until it hears the wake phrase
-**"hello echo"** — then it splits into camera (left) + tabbed terminal
-(right) for projects / on-screen registration / OpenAI-or-Ollama chat.
+**A face-recognising kiosk for the Raspberry Pi 5 + Hailo-10H** — wake
+it with your voice, chat with an LLM, and the kiosk remembers
+returning visitors.
 
-Each distinct face recognised before the session goes idle counts as one
-interaction (persisted in SQLite, surfaced on the welcome screen and the
-admin web UI). TTS runs in a worker thread so playback never freezes the
-camera. New visitors register themselves on the right panel — no host
-stdin required.
+The browser SPA presents a glassmorphic 1280×800 idle dashboard
+(weather, projects, upcoming sessions, hi-5 metrics) that switches to
+a live camera + transcript view the moment it hears the wake phrase
+"hello echo scope". Face recognition, anti-spoof liveness, voice
+transcription, and LLM chat all run locally on the Hailo NPU when
+possible, with OpenAI as a network-side option.
 
-The system idles until it hears the wake phrase, then runs a layered
-liveness stack (specular highlights + texture variance + temporal
-micro-motion + active blink challenge) before recognising or greeting
-anyone — so a printed photo, a phone screen with a still image, or a
-held-up monitor won't trigger a greeting.
-
-This repo was developed and tested on a Pi 5 running Raspberry Pi OS
-(Trixie / Python 3.13), HailoRT 5.3.0, and the H10 PCIe driver 5.x. Working
-directory in the steps below is `/home/echo/Documents/code/pi5` — adjust to
-your username/path.
-
-## How it works
-
-```
-   IDLE  (welcome screen)                  ACTIVE  (camera + right panel)
-  ┌────────────────────────────┐         ┌──────────────┬──────────────┐
-  │                            │         │              │ [P]rojects   │
-  │       Welcome to           │         │  camera with │ [R]egister   │
-  │        Echo AI             │ ──────▶ │  detections  │ [C]hat       │
-  │                            │  hello  │              │              │
-  │     21°C  partly cloudy    │  echo   │              │ list / form  │
-  │                            │         │              │ / chat lines │
-  │                  42        │         │              │              │
-  │            interactions    │         │              │              │
-  └────────────────────────────┘         └──────────────┴──────────────┘
-                ▲                                       │
-                └────────── 30s no new event ───────────┘
-```
-
-The recognition pipeline that runs in ACTIVE state:
-
-```
- Pi AI Camera (IMX500)
-        │  picamera2  RGB888 (libcamera quirk: bytes are BGR-ordered)
-        ▼
- BGR frame ─▶ Hailo-10H ─▶ SCRFD face detect (640x640)
-                              │ bbox + 5 landmarks per face
-                              ▼
-                  Quality gate  (score, size, frame edge,
-                                 eye distance, head roll)
-                              │
-                              ▼
-                  Liveness window (24 frames): relative landmark
-                  motion + face-region pixel jitter
-                              │ live faces only
-                              ▼
-                  Align to 112x112 (ArcFace 5-pt similarity)
-                              │
-                              ▼
-                  Hailo-10H ─▶ ArcFace embedding (512-D, L2)
-                              │
-                              ▼
-              Cosine match vs SQLite (faces.db)
-                  │                       │
-              match                       below threshold
-                  │                       │
-                  ▼                       ▼
-       greet (async TTS,         after N consecutive
-       no camera lag),           good-quality unknowns
-       counter +=1               → REGISTER tab opens,
-                                 user types emp_id + name on screen
-```
-
-TTS playback runs on a worker thread (`async_tts.py`) so the camera
-never freezes during a greeting. Greetings, pose prompts, and chat
-replies all queue and play serially.
-
-The DB has four tables; `emp_id` is the primary key for employees,
-`session_id` (a UUID assigned at each wake-word transition) keys
-counter rows.
-
-```sql
-employees(emp_id PRIMARY KEY, name, created_at)
-face_embeddings(id PK, emp_id FK, embedding BLOB, created_at)
-projects(id PK, title, description, ordering, created_at)
-interactions(id PK, emp_id, session_id, ts, UNIQUE(emp_id, session_id))
-```
-
-Multiple embeddings per person are stored — one per pose — and `emp_id`
-is deleted-cascade so removing an employee also drops their face data.
-Counter rows are deduplicated at the DB level: each `(emp_id,
-session_id)` can only insert once, so re-entries inside one ACTIVE
-session don't double-count.
-
-## Project layout
-
-| File              | Purpose |
-|-------------------|---------|
-| `config.py`       | Paths, thresholds, prompts, timing knobs |
-| `database.py`     | SQLite schema + CRUD |
-| `hailo_infer.py`  | HailoRT 5.x InferModel pipeline (SCRFD decode + NMS, ArcFace embed, alignment) |
-| `quality.py`      | Face quality gate + pose-change detection |
-| `liveness.py`     | Passive liveness check (relative landmark motion + pixel jitter) |
-| `blink.py`        | Active liveness: blink challenge gating per-session |
-| `tts.py`          | TTS backend abstraction (Piper / pyttsx3) with WAV prebuffer |
-| `async_tts.py`    | Worker-thread queue around the TTS backend so greetings never freeze the camera |
-| `wake_word.py`    | Vosk-based "hello echo" listener (background thread, mic) |
-| `weather.py`      | IP-geolocated Open-Meteo poller for the idle widget |
-| `chat.py`         | OpenAI → Ollama fallback, per-session 5-question budget |
-| `views.py`        | Render functions for the welcome screen and tabbed right panel |
-| `main.py`         | Live loop, IDLE/ACTIVE state machine, multi-face greet, tab handlers, registration / chat dispatch |
-| `enroll.py`       | Pre-enrol an employee from N camera frames (no live loop) |
-| `admin.py`        | CLI: list / show / delete / export DB entries |
-| `admin_web.py`    | Flask web UI for the same operations (`./start_admin.sh`) |
-| `requirements.txt`| Python deps (HailoRT, picamera2, and the Vosk model are NOT pip-installed) |
+| | |
+|---|---|
+| **Hardware** | Raspberry Pi 5 (8 GB) · Pi AI Camera (IMX500) · Hailo-10H M.2 AI HAT 2+ |
+| **OS** | Raspberry Pi OS Trixie · Python 3.13 · HailoRT 5.x |
+| **NPU workloads** | SCRFD (detect) · ArcFace (embed) · Whisper-Base (STT) · optional `qwen3:1.7b` LLM |
+| **Backends** | Chat: OpenAI / Hailo-Ollama / Anthropic-ready · STT: Hailo / OpenAI / faster-whisper / Vosk · TTS: Piper / pyttsx3 |
+| **UI** | Chromium kiosk pointed at a local Flask app on `:8090` |
 
 ---
 
-## 1. Hardware checklist
+## Contents
 
-- Raspberry Pi 5 (8 GB) on Raspberry Pi OS 64-bit (Bookworm or Trixie)
-- Active cooler (the Pi 5 + Hailo will run hot under load)
-- Pi AI Camera (IMX500) on the CSI ribbon
-- Hailo-10H M.2 module seated in the Pi AI HAT+ / M.2 HAT, PCIe enabled
-- Speaker / 3.5 mm jack / HDMI audio out for TTS greetings
-- USB / I2S microphone for the wake-word listener
-- Official 27 W USB-C PSU recommended
+1. [Quick start](#quick-start)
+2. [Architecture](#architecture)
+3. [Hardware checklist](#hardware-checklist)
+4. [Install](#install)
+5. [Configuration](#configuration)
+6. [Running the kiosk](#running-the-kiosk)
+7. [Speech: STT, TTS, wake word, chat](#speech)
+8. [Face recognition](#face-recognition)
+9. [Admin UI](#admin-ui)
+10. [State machine and timeouts](#state-machine)
+11. [Tuning](#tuning)
+12. [Troubleshooting](#troubleshooting)
+13. [Project layout](#project-layout)
+14. [Privacy and limitations](#privacy-and-limitations)
 
 ---
 
-## 2. Step-by-step install / activation
+## Quick start
 
-### 2.1 OS update + enable PCIe Gen 3
+For a Pi 5 + AI HAT 2+ that already has HailoRT 5.x installed, models in
+`models/`, and a working `python3.13 -m venv .venv`:
+
+```bash
+git clone <your-fork-url> pi5
+cd pi5
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env
+nano .env                                  # paste OPENAI_API_KEY=sk-...
+
+./start.sh
+```
+
+Chromium opens in kiosk mode at `http://127.0.0.1:8090`. Say
+**"hello echo scope"** to wake.
+
+Stop with **Ctrl+C** in the launching terminal, or from another
+terminal:
+
+```bash
+./stop.sh
+```
+
+If you don't yet have HailoRT / models / venv, jump to [Install](#install).
+
+---
+
+## Architecture
+
+```
+                          IDLE                                    ACTIVE
+                                                                   (camera + AI overlays)
+
+  ┌─────────────────────────────────────┐         ┌─────────────────────────────────────┐
+  │ 👋 I'M ECHO SCOPE        Mon 3:42 PM│         │ ECHO SCOPE     🌡 21°C  🙋 247  ✕  │
+  │                                     │         │                                     │
+  │   Say "Hello ECHO SCOPE!" to talk   │         │  ┌────────────┐                     │
+  │                                     │         │  │ live MJPEG │                     │
+  │   ☀ 21°C       👋  247 hi-5s today  │         │  │ + bounding │                     │
+  │   💧 45%       This week 1,432      │ ──────▶ │  │ boxes      │                     │
+  │                Best day Thu (312!)  │  wake   │  │            │                     │
+  │                                     │  word   │  └────────────┘                     │
+  │   💡 CALGARY AI FILES ON DISPLAY    │         │                                     │
+  │      ● Seeder Ideas   ● AWS COE     │         │  💡 AI FUN FACT                     │
+  │      ● Digital Quality Railcar      │         │  ChatGPT reached 100M users in...   │
+  │                                     │         │                                     │
+  │   📅 UPCOMING SESSION               │         │           🎤 Tap to speak           │
+  │      Build Your Own Doc Chatbot     │         │                                     │
+  │      Fri May 29 · 3:30–4:30 PM      │         │                                     │
+  └─────────────────────────────────────┘         └─────────────────────────────────────┘
+                  ▲                                                   │
+                  └──────── idle 30s OR ✕ tapped ─────────────────────┘
+```
+
+When the user taps the mic on the active screen, the camera + chat
+panel split 50/50:
+
+```
+┌─────────────────────┬───────────────────────┐
+│                     │ 💬 CHAT (5 left)      │
+│  Camera 598×520     │                       │
+│                     │ [user] hi             │
+│                     │ [assistant] Hey!      │
+│                     │ ┌─────────────┬─────┐ │
+│                     │ │ type or 🎤  │  ✈  │ │
+└─────────────────────┴───────────────────────┘
+              🎤 Tap to speak
+```
+
+### Module map
+
+```
+   Pi AI Camera (IMX500) ──┐
+                           │ picamera2 RGB888
+                           ▼
+   ┌──────────────────────────────────────────────────────┐
+   │  CameraWorker thread (main.py)                       │
+   │                                                      │
+   │  pipe.detect (SCRFD)    →  Hailo NPU                 │
+   │  pipe.embed  (ArcFace)  →  Hailo NPU                 │
+   │  silent learner (margin-gated)                       │
+   │  registration / pose capture                         │
+   │  state machine IDLE ↔ ACTIVE                         │
+   │                                                      │
+   │  draws boxes on frame → frame_streamer.FrameStreamer │
+   └──────────┬─────────────────────────────┬─────────────┘
+              │                             │
+   wake_word  │  state.py StateBus          │  /camera.mjpg
+   (Vosk)     │  (diff broadcast via SSE)   │
+              │                             │
+              │                             ▼
+              │                  ┌─────────────────────────┐
+              │                  │ web/app.py Flask app    │
+              │                  │   /            SPA      │
+              │                  │   /events      SSE      │
+              │                  │   /camera.mjpg          │
+              │                  │   /api/*                │
+              │                  │   /admin                │
+              │                  └────────┬────────────────┘
+              │                           ▼
+              │                  Chromium --kiosk --app=http://127.0.0.1:8090
+              │
+   chat_voice ▼
+   ChatVoiceCapture
+   ┌──────────────────────────────┐
+   │ Whisper backend (auto)       │
+   │   1. HailoWhisperASR  (NPU)  │
+   │   2. OpenAIWhisperASR (API)  │
+   │   3. FasterWhisperASR (CPU)  │
+   └─────────┬────────────────────┘
+             │ text
+             ▼
+   chat.ChatClient → OpenAI / Hailo-Ollama → reply
+                          │
+                          ▼
+   async_tts.AsyncTTS  →  Piper / pyttsx3  →  speaker
+```
+
+---
+
+## Hardware checklist
+
+| Item | Notes |
+|---|---|
+| Raspberry Pi 5 (8 GB) | 4 GB works but tight; the chat LLM benefits from headroom |
+| AI HAT 2+ (Hailo-10H 26 TOPS) | Use the **Gen 3** ribbon. Older 8L works but you'd lose Whisper-Tiny.en + need `HAILO_WHISPER_ADD_EMBED=true` |
+| Pi AI Camera (Sony IMX500) | The standard Pi v3 camera also works (RGB pipeline is the same) |
+| USB mic + speaker | Tested on Anker PowerConf A3301 (USB conferencing device) |
+| Display | Designed for **1280×800**. Smaller panels are scaled-to-fit by the SPA JS |
+| Touchscreen (optional) | DOM pointer events work; mouse is equivalent |
+
+---
+
+## Install
+
+### 1. OS prep + PCIe Gen 3
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
-sudo rpi-eeprom-update -a
-```
-
-In `/boot/firmware/config.txt`, under `[all]` add:
-
-```ini
-dtparam=pciex1_gen=3
-camera_auto_detect=1
-```
-
-(`dtparam=pciex1` may already be set by the AI HAT+ overlay — it isn't
-required if `lspci | grep -i hailo` shows the device after reboot.)
-
-```bash
-sudo reboot
-lspci | grep -i hailo     # must list "Hailo Technologies Ltd. Hailo-10H AI Processor"
-```
-
-### 2.2 Install the Hailo-10H PCIe driver
-
-The PCIe driver + firmware blobs come from Raspberry Pi's apt feed. The
-**userspace** runtime does NOT — see §2.4.
-
-```bash
-sudo apt install -y hailo-all
+sudo apt install -y python3.13-venv python3-pip git \
+                    libportaudio2 portaudio19-dev \
+                    espeak-ng alsa-utils \
+                    ffmpeg                          # required by hailo-apps speech-rec
+sudo raspi-config nonint do_pcie_gen 3              # enable Gen 3 for Hailo-10H
 sudo reboot
 ```
 
-After reboot, confirm the driver loaded and a `/dev/h1x-0` (or `/dev/hailo0`
-on older driver versions) appeared:
+### 2. Hailo driver + runtime
+
+apt's `hailo-all` ships HailoRT 4.23 which doesn't know about
+Hailo-10H. Get HailoRT 5.x as a `.deb` from
+<https://hailo.ai/developer-zone/software-downloads/>:
+
+- `hailort_5.x.y_arm64.deb`
+- `hailort-5.x.y-cp313-cp313-linux_aarch64.whl` (matches Trixie's
+  Python 3.13; pick `cp311` for Bookworm)
+
+Do **not** install Hailo's `hailort-pcie-driver` `.deb` — apt
+already supplied the matching kernel module.
 
 ```bash
-lsmod | grep hailo                # hailo1x_pci listed
-ls /dev/h1x-0 /dev/hailo0 2>/dev/null
-sudo dmesg | grep -i hailo | tail # "SOC Firmware Batch loaded successfully"
+sudo cp ~/Downloads/hailort_5.*_arm64.deb /tmp/
+sudo apt install /tmp/hailort_5.*_arm64.deb
+
+hailortcli --version                                # must show 5.x
+hailortcli fw-control identify                      # Architecture: HAILO10H
 ```
 
-### 2.3 Install Pi AI Camera support
-
-`picamera2` and `libcamera` are best installed via apt — the pip wheels
-need `libcap-dev` headers and several other native libs to compile.
-
-```bash
-sudo apt install -y python3-picamera2 python3-libcamera imx500-all
-rpicam-hello -t 5000               # quick preview to confirm the camera is alive
-```
-
-### 2.4 Install HailoRT 5.x from the Hailo Developer Zone
-
-The Raspberry Pi apt feed currently ships HailoRT **4.23**, which predates
-Hailo-10H support — you'll see `Hailo1X Devices are only supported in
-versions 5.0.0 and above` if you try to use it. Get HailoRT 5.x as a `.deb`
-from Hailo:
-
-1. Sign in (free account) at https://hailo.ai/developer-zone/software-downloads/.
-2. Filter platform **aarch64** / Raspberry Pi 5; pick the latest **HailoRT 5.x**.
-3. Download:
-   - `hailort_5.x.y_arm64.deb`
-   - `hailort-5.x.y-cp313-cp313-linux_aarch64.whl` *(matches Trixie's
-     Python 3.13; if you're on Bookworm/3.11 grab the `cp311` wheel instead)*
-
-   Do **not** install Hailo's `hailort-pcie-driver` `.deb` — apt's
-   `hailo-all` already installed the matching driver and double-installing
-   conflicts.
-
-4. Install (copy out of `~/Downloads` first to avoid the unrelated `_apt`
-   permission warning):
-
-   ```bash
-   sudo cp ~/Downloads/hailort_5.*_arm64.deb /tmp/
-   sudo apt install /tmp/hailort_5.*_arm64.deb
-
-   hailortcli --version            # must show 5.x
-   hailortcli scan                  # must list pci/0001:01:00.0
-   hailortcli fw-control identify   # Architecture: HAILO10H, FW 5.x
-   ```
-
-If `apt update` complains about a stale `hailo.list` source, remove it:
+If `apt update` flags a stale `hailo.list` source:
 
 ```bash
 sudo rm -f /etc/apt/sources.list.d/hailo.list /etc/apt/keyrings/hailo.gpg
 ```
 
-### 2.5 Clone the project and create the venv
+### 3. Clone + venv
 
 ```bash
-mkdir -p /home/echo/Documents/code
-cd /home/echo/Documents/code
+mkdir -p ~/Documents/code && cd ~/Documents/code
 git clone <your-fork-url> pi5
-cd /home/echo/Documents/code/pi5
+cd pi5
 
-# --system-site-packages so apt-installed picamera2 + libcamera are visible
-python3 -m venv --system-site-packages .venv
+python3 -m venv --system-site-packages .venv      # for apt-installed picamera2/libcamera
 source .venv/bin/activate
-
 pip install --upgrade pip
 pip install ~/Downloads/hailort-5.*-cp313-cp313-linux_aarch64.whl
 pip install -r requirements.txt
-
-python -c "import hailo_platform, picamera2, cv2, numpy, pyttsx3; \
-           print('ok', hailo_platform.__version__)"
 ```
 
-### 2.6 Audio out for TTS
+### 4. Models
+
+Three required, two optional. All live in `models/`.
+
+| File | Purpose | Where to get it |
+|---|---|---|
+| `scrfd_10g.hef` | Face detector (Hailo) | <https://github.com/hailo-ai/hailo_model_zoo/releases> · filter HAILO10H |
+| `arcface_mobilefacenet.hef` | Face embedder (Hailo) | same source |
+| `vosk-model-small-en-us-0.15/` | Wake-word recogniser | `wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip` and unzip into `models/` |
+| `whisper-base-encoder.hef` + `whisper-base-decoder.hef` + `whisper-base-assets/` | Hailo Whisper STT (recommended) | `pip install 'hailo-apps[speech-rec]'` auto-downloads on first use — symlink or copy into `models/`. See [docs/hailo_asr.md](docs/hailo_asr.md) |
+| `en_US-hfc_female-medium.onnx` + `.json` | Piper TTS voice | `python -m piper.download_voices en_US-hfc_female-medium --data-dir models/` |
+
+Verify the Hailo HEFs target the right chip:
 
 ```bash
-sudo apt install -y espeak-ng alsa-utils
-aplay -l                                          # find output devices
-aplay /usr/share/sounds/alsa/Front_Center.wav    # default-device test
-```
-
-You have two ways to send TTS to a specific output (e.g. an Anker A3301
-USB speakerphone instead of HDMI):
-
-**Option A — make the device the system default (everything follows).**
-
-PipeWire (Trixie default):
-
-```bash
-sudo apt install -y wireplumber
-wpctl status                                      # find the sink ID for the Anker
-wpctl set-default <SINK_ID>
-```
-
-PulseAudio compat layer:
-
-```bash
-sudo apt install -y pulseaudio-utils
-pactl list short sinks
-pactl set-default-sink <sink-name>
-```
-
-`raspi-config` → System → Audio also works for HDMI / headphone jack.
-
-**Option B — pin only this app's TTS, leave system audio alone.**
-
-Find an ALSA name for the Anker (`grep` doesn't match — the card label
-is `PowerConf`, not `Anker`):
-
-```bash
-aplay -L | grep -B1 -iE 'powerconf|a3301|usb audio'
-# example match:
-#   plughw:CARD=PowerConf,DEV=0
-#       PowerConf, USB Audio
-```
-
-Then in `config.py`:
-
-```python
-AUDIO_OUTPUT_DEVICE = "plughw:CARD=PowerConf,DEV=0"   # or "plughw:2,0"
-```
-
-The Greeter synthesises TTS to a temp WAV and plays it via `aplay -D
-<device>`, so the route is independent of whatever the system default is.
-Quick verification:
-
-```bash
-aplay -D plughw:CARD=A3301,DEV=0 /usr/share/sounds/alsa/Front_Center.wav
-```
-
-### 2.7 Get the Hailo-10H HEF models
-
-Two HEFs go into `models/`:
-
-- `models/scrfd_10g.hef`               — face detector
-- `models/arcface_mobilefacenet.hef`   — face embedder
-
-The Hailo Model Zoo CLI (`hailomz`) is **not** on PyPI and the standalone
-`pip install -e .` of the GitHub repo fails on Pi (it expects a private
-monorepo layout). Just download the HEFs manually:
-
-1. From the Model Zoo releases: https://github.com/hailo-ai/hailo_model_zoo/releases
-2. Or from the Developer Zone Model Zoo page (filter by Hailo-10H).
-3. Or from the Hailo Application Code Examples repo:
-   https://github.com/hailo-ai/Hailo-Application-Code-Examples
-
-Drop the two files into `models/`:
-
-```bash
-mkdir -p /home/echo/Documents/code/pi5/models
-mv ~/Downloads/scrfd_10g.hef /home/echo/Documents/code/pi5/models/
-mv ~/Downloads/arcface_mobilefacenet.hef /home/echo/Documents/code/pi5/models/
-```
-
-**Verify the architecture before first run** — a HEF compiled for
-`HAILO15H` will fail to load on the H10:
-
-```bash
-hailortcli parse-hef models/scrfd_10g.hef            | head -1
+hailortcli parse-hef models/scrfd_10g.hef             | head -1
 hailortcli parse-hef models/arcface_mobilefacenet.hef | head -1
-# Both must say: HEF Compatible for: HAILO10H   (or "...HAILO15H, HAILO10H")
+# Both must say: HEF Compatible for: HAILO10H
 ```
 
-Smoke-test inference. Note H10 uses `run2`, not `run`:
+Smoke-test (run2 is the H10 path):
 
 ```bash
 hailortcli run2 -t 5 set-net models/scrfd_10g.hef
-# expect something like: scrfd_10g: fps: 240+
+# expect fps: 240+
 ```
 
-### 2.8 Wake-word ("hello echo") setup
-
-The wake word uses [Vosk](https://alphacephei.com/vosk/) — small, offline,
-ARM-friendly. You need a microphone reachable as an ALSA input device, the
-Vosk Python package + `sounddevice` (already in `requirements.txt`), and a
-small acoustic model.
-
-System dependencies:
+### 5. Audio
 
 ```bash
-sudo apt install -y libportaudio2 portaudio19-dev
-arecord -l                                # confirm a capture device is listed
-arecord -d 3 -f cd /tmp/test.wav && aplay /tmp/test.wav   # mic loopback test
+arecord -l                                          # find a capture device
+arecord -d 3 -f cd /tmp/test.wav && aplay /tmp/test.wav    # mic loopback
 ```
 
-Download the English small model (~40 MB) into `models/`:
+If you have a USB speakerphone you want to pin (instead of HDMI),
+either set it as the system default in `wpctl`/`pactl` or set
+`AUDIO_OUTPUT_DEVICE=plughw:CARD=PowerConf,DEV=0` in `.env`.
+
+### 6. Browser
 
 ```bash
-cd /home/echo/Documents/code/pi5/models
-wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
-unzip vosk-model-small-en-us-0.15.zip
-rm vosk-model-small-en-us-0.15.zip
-ls vosk-model-small-en-us-0.15/           # should contain conf/, am/, graph/, ...
+sudo apt install -y chromium fonts-noto-color-emoji
 ```
 
-The wake phrase is in `config.py` (`WAKE_WORD = "hello echo"`). If you'd
-rather pick a different short phrase, change it there and restart. Vosk
-runs the recogniser with a tight grammar that only knows the keyword and
-an "[unk]" sink, which keeps CPU usage minimal and reduces false matches.
-
-If your mic isn't auto-selected, list devices and force one:
-
-```bash
-python -c "import sounddevice as sd; print(sd.query_devices())"
-# pick the mic's index, then in your shell:
-export SD_DEVICE=<index>     # picked up automatically by sounddevice
-```
-
-### 2.9 Better-sounding TTS with Piper (recommended)
-
-The default voice uses `pyttsx3` + `espeak-ng` — fast but robotic.
-**Piper** (via the [`piper1-gpl`](https://github.com/OHF-Voice/piper1-gpl)
-rewrite) is a neural TTS engine that runs on-device and produces a much
-more natural voice. It loads the ONNX voice once at startup so each
-utterance is fast (~200–400 ms on Pi 5). Skip this section to keep the
-espeak voice — the app falls back to `pyttsx3` automatically if Piper
-isn't available.
-
-#### 1. Install the Python package
-
-```bash
-cd /home/echo/Documents/code/pi5
-source .venv/bin/activate
-pip install piper-tts
-```
-
-Wheels are published for cp38–cp312. **On Python 3.13 (Trixie default)
-the install will fail** with `No matching distribution found` — Piper
-hasn't shipped cp313 wheels yet. Either pip will skip it (the
-`requirements.txt` marks it conditional) or you can build a side venv
-on Python 3.12 just for TTS. The app falls back to `pyttsx3` cleanly
-either way.
-
-#### 2. Download voice models
-
-Use the bundled installer to grab a curated set of clear English voices
-(~500 MB, 8 voices), or `--all` for every English voice listed in the
-script (~2 GB).
-
-```bash
-./install_piper_voices.sh             # 8 curated voices (recommended)
-./install_piper_voices.sh --all       # every English voice listed
-./install_piper_voices.sh --list      # show what each option installs
-```
-
-The default voice (`config.PIPER_MODEL_PATH`) is
-`en_US-hfc_female-medium`. Switch by dropping a different `.onnx` +
-`.onnx.json` pair into `models/piper/` and updating `PIPER_MODEL_PATH`
-in `config.py`.
-
-| Voice                              | Style |
-|------------------------------------|-------|
-| `en_US-hfc_female-medium`          | US female, very clear  ← default |
-| `en_US-amy-medium`                 | US female, slightly warmer |
-| `en_US-lessac-medium`              | US male, news-anchor |
-| `en_US-ryan-medium`                | US male, conversational |
-| `en_US-libritts-high`              | Highest quality, slower |
-| `en_GB-alan-medium`                | British male |
-| `en_GB-jenny_dioco-medium`         | British female |
-
-#### 3. Smoke test
-
-```bash
-python -c "
-from piper import PiperVoice
-import wave
-v = PiperVoice.load('models/piper/en_US-hfc_female-medium.onnx')
-with wave.open('/tmp/test.wav', 'wb') as f:
-    v.synthesize_wav('Hello, this is the default voice.', f)
-"
-aplay -D plughw:CARD=PowerConf,DEV=0 /tmp/test.wav
-```
-
-**Smoke test** through the Anker (if you've pinned `AUDIO_OUTPUT_DEVICE`):
-
-```bash
-echo "Hello, this is Amy speaking." | tools/piper/piper \
-    --model models/piper/en_US-amy-medium.onnx \
-    --output_file /tmp/test.wav
-aplay -D plughw:CARD=PowerConf,DEV=0 /tmp/test.wav
-```
-
-`./start.sh` will print one of these on launch:
-
-- `[TTS] using Piper (Python): en_US-hfc_female-medium.onnx`  ← installed
-- `[TTS] using pyttsx3 / espeak-ng`                            ← Piper unavailable
-
-To force the espeak voice anyway, set `TTS_BACKEND = "pyttsx3"` in
-`config.py`.
+(start.sh tries `chromium-browser`, `chromium`, `google-chrome`,
+`firefox` in that order — first one found wins.)
 
 ---
 
-## 3. Using it
+## Configuration
 
-### 3.0 Welcome screen, tabs, and counter
-
-**IDLE** is a full-screen blue panel with "Welcome to Echo AI" centred,
-weather top-right, and the persistent interaction counter bottom-right.
-The camera keeps running in the background — but it's **not shown** in
-this state. Detection / silent learning don't run in IDLE either, so
-CPU is mostly the wake-word listener.
-
-Saying **"hello echo"** transitions to **ACTIVE**: the cv2 window
-splits into camera (left) and a tabbed right panel (right). Three tabs:
-
-| Tab        | Key | Purpose                                                            |
-|------------|-----|--------------------------------------------------------------------|
-| `PROJECTS` | `P` | Read-only list pulled from `projects` table; refreshes every 5 s.  |
-| `REGISTER` | `R` | In-window text fields. Tab to switch field, Enter to submit, then voice-guided pose capture runs. Auto-opens after a quality unknown face streak. |
-| `CHAT`     | `C` | Up to 5 questions per session via OpenAI / Ollama (see §3.6). `V` toggles voice / keyboard input. |
-
-The header strip across each tab also shows
-`this session: N` — the number of distinct people greeted since the
-last wake-up.
-
-After `IDLE_AFTER_LAST_INTERACTION_SEC` (default **30 s**) without a
-new event the kiosk drops back to IDLE. New events are: a different
-emp_id greeted, an unknown high-quality face in frame, a chat
-exchange, or a registration.
-
-### 3.1 Live recogniser with auto-registration
-
-The fastest way to launch with mic + speaker pinned to the Anker is the
-provided wrapper:
+### .env (user-editable)
 
 ```bash
-cd /home/echo/Documents/code/pi5
-./start.sh
-```
-
-`start.sh` exports `SD_DEVICE` (mic input index for sounddevice) and
-`AUDIO_OUTPUT_DEVICE` (ALSA name for the speaker), activates the venv,
-and runs `python main.py --auto-register`. Edit the defaults at the top
-of the script for your machine, or override per invocation:
-
-```bash
-SD_DEVICE=3 ./start.sh
-EXTRA_ARGS="--no-wake-word --auto-register" ./start.sh
-./start.sh --no-display      # extra args pass through to main.py
-```
-
-If you'd rather drive `python main.py` directly:
-
-```bash
-source .venv/bin/activate
-SD_DEVICE=1 AUDIO_OUTPUT_DEVICE=plughw:CARD=PowerConf,DEV=0 \
-    python main.py --auto-register
-```
-
-What happens:
-
-- The system starts in **IDLE** state. Faces are still detected and drawn,
-  but no embeddings are computed and no greetings are spoken. A banner
-  across the top reads `Say 'hello echo' to start recognition`.
-- When the wake word is heard, the system transitions to **ACTIVE**, says
-  "Hello. I am ready.", and starts the full pipeline.
-- Faces are tracked in real time. Bounding boxes are drawn green for
-  recognised people, with `name (cosine_score)`.
-- Detections that fail the **quality gate** (a hand near the face, a side
-  profile, a face touching the edge of the frame, a tilted head, a face
-  too far from the camera) are labelled `low quality: <reason>` and
-  ignored. They will NOT trigger recognition or registration.
-- The largest face is also fed to the **temporal liveness check** — it
-  has to show facial micro-motion AND face-region pixel jitter over a
-  sliding window before the system will recognise it. Other faces in
-  the scene get the cheap **single-frame screen-attack gates** (specular
-  highlights + texture variance). Failing faces show
-  `checking liveness... (static (photo?))` or `liveness: glare/screen`.
-- Once a recognised face passes both gates, the system runs a one-shot
-  **active blink challenge** for that emp_id (configurable via
-  `LIVENESS_REQUIRE_BLINK`). Speak prompt: "Please blink once to
-  confirm." A clear range of eye-region pixel std across a 5-second
-  window passes the challenge. Confirmation is held for the rest of the
-  ACTIVE session and cleared on IDLE. This defeats the remaining attack
-  vector — a high-quality video replay.
-- **All recognised faces are greeted**, not just the largest one. Each
-  emp_id is rate-limited to one greeting per `GREET_COOLDOWN_SEC` so
-  someone walking back and forth doesn't trigger repeats.
-- The window is split: **camera on the left, conversation panel on the
-  right**. The panel reads like a chat — three roles only:
-  - **You** — the wake word when matched.
-  - **Echo** — what the system says (greetings, prompts).
-  - **·** — short status events (`Recognised Echo`, `New face — getting
-    ready to register`, `Going to sleep`).
-
-  Vosk partials, internal state transitions, streak counters, etc. go
-  to stdout for debugging — the on-screen panel stays readable. Disable
-  with `SHOW_TRANSCRIPT_PANEL = False` if you want the camera-only
-  window.
-- After `IDLE_AFTER_LAST_INTERACTION_SEC` (10 s) **with no new event**
-  the system drops back to IDLE. "New event" means a different person
-  greeted, or an unknown face standing in front of the camera. A
-  recognised person who keeps standing there does NOT keep the system
-  awake — the timer counts down anyway. Saying "hello echo" again wakes
-  it back up.
-- On every confident match (score ≥ `SILENT_LEARN_MIN_SCORE`) the new
-  embedding is silently appended to that person's gallery, so the
-  recogniser gets more robust over time. Rate-limited to one new sample
-  per person per `SILENT_LEARN_MIN_INTERVAL_SEC` (60 s default), and
-  capped at `SILENT_LEARN_MAX_SAMPLES_PER_PERSON` (30 default — oldest
-  drop first when over). Set `SILENT_LEARN_ENABLED = False` to turn off.
-- An unknown but high-quality, **live** face must persist for
-  `UNKNOWN_FRAMES_BEFORE_REGISTER` consecutive frames (~half a second)
-  before registration is offered. The counter is shown on screen.
-
-Skip the wake word during development:
-
-```bash
-python main.py --auto-register --no-wake-word
-```
-- Registration is voice-guided through 5 poses. For each prompt the
-  capture only happens when:
-  1. enough time has elapsed for the user to actually move (`POSE_HOLD_SEC`),
-  2. the face has shifted in the asked direction by at least
-     `POSE_MIN_SHIFT` × inter-eye distance (no shift required for the first
-     "look straight" calibration pose), and
-  3. the face has been still for `POSE_STABLE_SEC` (so we don't grab a
-     motion-blurred frame).
-- Greeter rule: the same person greeted twice in a row stays silent. A
-  *different* person resets the gate.
-- Press **`r`** to force a registration of the current largest face.
-- Press **`q`** to quit.
-
-Headless (no preview window):
-
-```bash
-python main.py --auto-register --no-display
-```
-
-### 3.2 Pre-enrol from the CLI (no live loop)
-
-```bash
-python enroll.py --emp-id E001 --name "Alice Kumar" --frames 5
-```
-
-### 3.3 Manage the database
-
-The DB lives at `/home/echo/Documents/code/pi5/faces.db` (SQLite).
-`emp_id` is the primary key.
-
-#### CLI
-
-```bash
-python admin.py list                       # all employees + sample counts
-python admin.py show E001                  # one employee + per-embedding info
-python admin.py delete E001                # asks for confirmation
-python admin.py delete E001 --yes          # skip confirmation
-python admin.py export employees.csv       # CSV (no embedding bytes)
-python admin.py path                       # absolute path to faces.db
-```
-
-#### Web UI
-
-A minimal Flask app on port 8081 (configurable; 8080 is left for
-Open WebUI / other services). Lets you list, rename, and delete
-employees from a browser. SQLite handles concurrent access, so it can
-run alongside `./start.sh` on the same Pi.
-
-```bash
-./start_admin.sh                           # http://0.0.0.0:8081
-ADMIN_HOST=127.0.0.1 ADMIN_PORT=9000 ./start_admin.sh
-```
-
-JSON API for scripting:
-
-```
-GET  /api/employees                  -> list
-GET  /api/employees/<emp_id>         -> details
-POST /api/employees/<emp_id>/rename  -> body: {"name": "..."}
-POST /api/employees/<emp_id>/delete  -> remove + cascade embeddings
-```
-
-#### Direct SQLite
-
-```bash
-sudo apt install -y sqlite3 sqlitebrowser
-sqlite3 /home/echo/Documents/code/pi5/faces.db
-sqlite> .tables
-sqlite> SELECT emp_id, name FROM employees;
-```
-
-`sqlitebrowser` provides a GUI if you'd rather click around.
-
-### 3.6 Chat (OpenAI → Ollama fallback)
-
-Chat is opened from the right panel by pressing **`C`**. The header
-shows which backend is live:
-
-- `OpenAI · gpt-4o-mini` when `OPENAI_API_KEY` is set and
-  `api.openai.com` is reachable.
-- `Ollama (local) · qwen3:1.7b` when local Hailo-Ollama is running on
-  `localhost:8000` and the model is pulled
-  (see https://www.raspberrypi.com/documentation/computers/ai.html).
-  `start.sh` will probe the API on launch and run `hailo-ollama serve`
-  in the background if it's not already up.
-- `Chat unavailable — no backend reachable` when neither works.
-
-Each emp_id gets `CHAT_MAX_QUESTIONS_PER_SESSION` questions (default
-**5**) per ACTIVE session; the budget resets on the next wake. The
-**6th** question is rejected with `Question budget reached for this
-session.`
-
-Setup OpenAI:
-
-```bash
-# Preferred: copy the env template and edit it. start.sh sources .env
-# automatically before launch.
 cp .env.example .env
-nano .env                          # set OPENAI_API_KEY=sk-...
-
-# Alternative: bashrc export. Either works.
-# echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
-exec bash
-./start.sh
+nano .env
 ```
 
-Setup Hailo-Ollama (matches the Pi 5 docs above; runs LLMs on the
-Hailo-10H instead of the CPU):
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` | _empty_ | Primary chat backend. Also used by OpenAI Whisper if Hailo Whisper isn't available. |
+| `KIOSK_ADMIN_USER` | `admin` | HTTP basic auth username for `/admin` |
+| `KIOSK_ADMIN_PASS` | _random_ | Pin to a value here; otherwise start.sh generates one at every launch and prints it in the banner |
+| `KIOSK_PORT` | `8090` | Flask port (avoid 8080 — that's Open WebUI by default) |
+| `PRELOAD_OLLAMA` | `0` | Set to `1` to always pre-load Hailo-Ollama (faster fallback at the cost of 2.5 GB RAM) |
+| `SD_DEVICE` | _auto_ | sounddevice input index (`python -c "import sounddevice; print(sounddevice.query_devices())"`) |
+| `AUDIO_OUTPUT_DEVICE` | _system default_ | ALSA device name for the speaker |
+| `HAILO_WHISPER_MODEL` | `base` | `tiny` / `base` / `tiny.en` |
+| `HAILO_WHISPER_ENCODER_HEF`, `_DECODER_HEF`, `_NPY_DIR` | _under `models/`_ | Override if you keep them elsewhere |
+| `HAILO_WHISPER_ADD_EMBED` | `false` | `true` for Hailo-8 / Hailo-8L (older hardware) |
 
-```bash
-# Install per https://www.raspberrypi.com/documentation/computers/ai.html
-hailo-ollama pull qwen3:1.7b      # recommended for kiosk chat
-# (other models that fit Pi 5: qwen2.5:1.5b, llama3.2:1b. Avoid
-#  deepseek_r1:* -- it emits visible <think> blocks. Avoid
-#  qwen2.5-coder:* -- code-tuned, weak at chat.)
-```
+`.env` is git-ignored. start.sh sources it via `set -a` so every
+key=value becomes an exported environment variable for the Python
+process and its threads.
 
-`start.sh` checks `localhost:8000/api/tags` on launch; if the daemon
-isn't up it runs `hailo-ollama serve` in the background and waits up
-to 10 s for the API to come up (log at `/tmp/hailo-ollama.log`). If
-your build uses a different invocation, set `HAILO_OLLAMA_CMD` before
-calling `start.sh`. Failure is non-fatal — chat will simply route to
-OpenAI (or display "Chat unavailable" if neither is configured).
+### config.py (project defaults)
 
-Switch backend preference order in `config.py`:
+The big knobs are grouped near the top of `config.py`. Common
+overrides — drop into `config.py` directly or set the matching env
+var:
 
-```python
-CHAT_BACKEND_ORDER = ("ollama", "openai")   # local-first
-```
-
-Toggle voice / keyboard input with **`V`** while the chat tab is open;
-voice mode listens via faster-whisper tiny.en (see §3.x Chat voice)
-(no grammar) and submits when you stop speaking. Replies are spoken
-through the configured TTS backend and shown in the panel.
-
-### 3.6.1 Chat voice (Whisper)
-
-Chat-tab voice input is **not** done by Vosk. It uses a dedicated
-ASR backend selected via `config.CHAT_ASR_BACKEND`:
-
-| Backend           | Footprint                | When to use                        |
-|-------------------|--------------------------|------------------------------------|
-| `faster-whisper`  | ~250 MB resident (lazy)  | Default. Local, no API key.        |
-| `openai`          | ~0 local (HTTP)          | When you already have an API key and want best accuracy. |
-| `vosk`            | shares wake-word model   | Fully-offline fallback; lower quality. |
-
-The wake-word listener (small Vosk model) and chat-voice capture
-**share the mic device**. When you tap the mic icon, the wake-word
-listener releases the ALSA stream, chat-voice opens its own stream
-with VAD (auto-finalises after 1.5 s of silence or 12 s max), runs the
-Whisper backend, and hands the wake-word listener back when done.
-
-Memory: the previous design loaded a 1.8 GB Vosk model just to occasionally
-transcribe chat questions, which combined with Hailo-Ollama pushed the
-Pi 5 into swap and froze the system. The current split (small Vosk for
-wake word + tiny Whisper for chat) reclaims ~2 GB and removes the
-freeze.
-
-Future: see `docs/hailo_asr.md` for notes on running Whisper on the
-Hailo-10H instead of the CPU (deferred — currently no production-ready
-HEF).
-
-### 3.7 Projects board
-
-Projects live in the `projects` table (`id, title, description,
-ordering, created_at`). The `PROJECTS` tab in ACTIVE state renders a
-scrolling list, refreshed every 5 seconds. Edit them through the admin
-UI (§3.3 *Web UI*) — the kiosk picks up changes without a restart.
-
-### 3.8 Counter / metrics
-
-Every distinct face recognised in an ACTIVE session inserts one row
-into the `interactions` table (`UNIQUE(emp_id, session_id)` — so the
-same person re-recognised in the same session doesn't double-count).
-Total is shown bottom-right of the welcome screen and at
-`http://<pi>:8081/api/metrics`. To reset:
-
-```bash
-sqlite3 /home/echo/Documents/code/pi5/faces.db "DELETE FROM interactions;"
-```
-
-### 3.4 Re-registration
-
-Running registration with an `emp_id` that already exists triggers a
-match check:
-
-- The captured embeddings are compared to the existing ones for that
-  `emp_id`.
-- If the best cosine score ≥ `REREGISTER_MATCH_THRESHOLD` (0.35 by
-  default) → embeddings are appended (more samples = better recognition).
-- Otherwise → registration is **refused** with a spoken warning. This is
-  what stops someone else "claiming" your `emp_id`.
-
-### 3.5 Tuning knobs (in `config.py`)
-
-Recognition / registration trigger:
-
-| Setting | Effect |
-|---------|--------|
-| `COSINE_MATCH_THRESHOLD`         | Lower = looser match (more false accepts). Default 0.38. |
-| `REREGISTER_MATCH_THRESHOLD`     | How strictly the re-register match must agree. Default 0.35. |
-| `UNKNOWN_FRAMES_BEFORE_REGISTER` | Anti-flicker streak length before offering enrolment. |
-
-Quality gate:
-
-| Setting | Effect |
-|---------|--------|
-| `QUALITY_SCORE_THRESHOLD`     | Min detector confidence (0.70) |
-| `QUALITY_MIN_FACE_PIXELS`     | Min bbox W and H (110) — rejects far-away faces |
-| `QUALITY_FRAME_EDGE_MARGIN`   | Reject faces near the frame border |
-| `QUALITY_MIN_EYE_DISTANCE`    | Reject too-small / occluded faces (28 px) |
-| `QUALITY_MAX_EYE_TILT`        | Reject extreme head roll (0.45) |
-
-Wake word + state machine:
-
-| Setting | Effect |
-|---------|--------|
-| `WAKE_WORD`                          | Phrase that activates recognition. Default `"hello echo"`. |
-| `IDLE_AFTER_LAST_INTERACTION_SEC`    | Drop back to IDLE after this many seconds with no new event (10) |
-| `ACTIVE_SESSION_MAX_SEC`             | Hard cap on an ACTIVE session (10 min) |
-
-Silent learning:
-
-| Setting | Effect |
-|---------|--------|
-| `SILENT_LEARN_ENABLED`                | Master switch (True) |
-| `SILENT_LEARN_MIN_SCORE`              | Only learn when match score ≥ this (0.55) |
-| `SILENT_LEARN_MAX_SIMILARITY`         | Skip if new sample is ~ a duplicate of one already stored (0.92) |
-| `SILENT_LEARN_MIN_INTERVAL_SEC`       | At most one new sample per person per this many seconds (60) |
-| `SILENT_LEARN_MAX_SAMPLES_PER_PERSON` | Cap; oldest drop first when over (30) |
-
-Liveness (passive):
-
-| Setting | Effect |
-|---------|--------|
-| `LIVENESS_WINDOW_FRAMES`        | Sliding window length (24) |
-| `LIVENESS_MAX_SPECULAR_RATIO`   | Reject if more than this fraction of the face crop is near-saturated white. Defeats screens with glare. (0.10) |
-| `LIVENESS_MIN_TEXTURE_VAR`      | Reject if face crop is too smooth (Laplacian variance below this). Defeats flat phone/monitor displays. (60) |
-| `LIVENESS_REL_MOTION_MIN`       | Min facial micro-motion in window. Lower = more permissive. |
-| `LIVENESS_PIXEL_JITTER_MIN`     | Min face-region pixel jitter beyond camera read noise. |
-
-Liveness (active blink):
-
-| Setting | Effect |
-|---------|--------|
-| `LIVENESS_REQUIRE_BLINK`     | Master switch (True). Set False to skip the active challenge. |
-| `LIVENESS_BLINK_PROMPT`      | Spoken prompt ("Please blink once to confirm.") |
-| `LIVENESS_BLINK_TIMEOUT_SEC` | Max wait for a blink (5 s) |
-| `LIVENESS_BLINK_PATCH_PX`    | Half-extent of eye-region patch sampled from each eye landmark (14) |
-| `LIVENESS_BLINK_DELTA_MIN`   | Min std-dev range across the window for "blink seen" (6.0). Raise if too lax, lower if real blinks miss. |
-
-TTS:
-
-| Setting | Effect |
-|---------|--------|
-| `TTS_BACKEND`        | `"piper"` (preferred) or `"pyttsx3"` |
-| `PIPER_MODEL_PATH`   | Path to the `.onnx` voice model |
-| `TTS_PREBUFFER_MS`   | Silence padded at the start of each utterance so USB speakerphones don't clip the first word (500). Set to 0 to disable. |
-| `AUDIO_OUTPUT_DEVICE` | ALSA name for the speaker (`"plughw:CARD=PowerConf,DEV=0"`). `None` = system default. |
-
-HUD transcript panel:
-
-| Setting | Effect |
-|---------|--------|
-| `SHOW_TRANSCRIPT_PANEL`   | Master switch. False keeps the camera-only window. |
-| `TRANSCRIPT_PANEL_WIDTH`  | Pixels added to the right of the camera (420). |
-| `TRANSCRIPT_MAX_EVENTS`   | Ring-buffer size; oldest events scroll out (16). |
-| `DISPLAY_SCALE`           | Scales the whole composed window at display time only. Detection runs on full-res frames -- this just shrinks the cv2 window so it fits a small screen. (1.0) |
-| `CAMERA_RESOLUTION`       | Source resolution from picamera2 (1280, 720). |
-
-#### Fitting a small screen (e.g. a 10.1" Pi-mounted display)
-
-The camera+panel composite is roughly `CAMERA_RESOLUTION[0] +
-TRANSCRIPT_PANEL_WIDTH` wide × `CAMERA_RESOLUTION[1]` tall — by default
-about **1700 × 720**, which overflows most 10.1" panels.
-
-Two ways to make it fit. Pick whichever matches your priorities.
-
-**Option A — display-only scale (recommended).** Detection runs on the
-full-res frame so accuracy is unchanged; the cv2 window is shrunk just
-before `imshow`. One knob:
-
-```python
-# config.py
-DISPLAY_SCALE = 0.75    # for 1280 x 800 panels  -> ~1275 x 540
-DISPLAY_SCALE = 0.60    # for 1024 x 600 panels  -> ~1020 x 432
-```
-
-**Option B — shrink at the source.** Lower-res camera capture (faster
-and lighter) plus a narrower panel. Quality thresholds stay valid as
-long as faces still occupy the same fraction of the frame — but if
-you're standing far back, drop `QUALITY_MIN_FACE_PIXELS` proportionally.
-
-```python
-# config.py — for a 1280 x 800 panel
-CAMERA_RESOLUTION = (800, 480)
-TRANSCRIPT_PANEL_WIDTH = 320
-# total: 1120 x 480, fits with headroom
-
-# config.py — for a 1024 x 600 panel
-CAMERA_RESOLUTION = (640, 480)
-TRANSCRIPT_PANEL_WIDTH = 280
-QUALITY_MIN_FACE_PIXELS = 70    # was 110; you're at half-res
-# total: 920 x 480, fits 1024 x 600
-```
-
-You can also combine the two: keep the camera at native res for the
-detector, then `DISPLAY_SCALE = 0.6` so the on-screen window fits.
-
-The HUD prints every signal alongside its threshold while liveness is
-failing, e.g. `motion=0.32/0.45  jitter=3.2/4.0  glare=18%/10%
-tex=42/60` — the value before the slash is the live measurement, after
-it is the threshold. Anything where measurement < threshold is the
-reason the face is being rejected, so you tune that knob.
-
-Voice-guided pose capture:
-
-| Setting | Effect |
-|---------|--------|
-| `POSE_PROMPTS`            | List of (spoken text, expected direction). Edit freely. |
-| `POSE_HOLD_SEC`           | Min time after the prompt before capture is even attempted (1.5) |
-| `POSE_STABLE_SEC`         | Face must be still this long before capturing (0.5) |
-| `POSE_STABLE_PIXEL_TOL`   | Max landmark drift inside the stability window (4 px) |
-| `POSE_MIN_SHIFT`          | Min directional shift in eye-distance units (0.25) |
-| `POSE_CAPTURE_TIMEOUT_SEC`| Skip the pose if not satisfied in this many seconds (8) |
+| Knob | Default | What it controls |
+|---|---|---|
+| `BRAND_NAME` | `"ECHO SCOPE"` | Header text + greeting copy |
+| `WAKE_WORD` | `"hello echo scope"` | Primary wake phrase |
+| `WAKE_WORD_ALIASES` | `["hello echo", "echo scope", "hey echo"]` | Also accepted by the Vosk grammar |
+| `COSINE_MATCH_THRESHOLD` | `0.38` | Lower = match more loosely (false positives risk) |
+| `LIVENESS_ENABLED` | `False` | Anti-spoofing pipeline. Off in trusted environments |
+| `IDLE_AFTER_LAST_INTERACTION_SEC` | `30` | Dashboard timeout after the last engagement |
+| `CHAT_KEEPALIVE_SEC` | `180` | While a chat exchange exists, kiosk stays ACTIVE for this long after the last message |
+| `CHAT_MAX_QUESTIONS_PER_SESSION` | `5` | Per-emp_id chat budget |
+| `CHAT_ASR_BACKEND` | `"auto"` | Force `"hailo"` / `"openai"` / `"faster-whisper"` / `"vosk"` if needed |
 
 ---
 
-## 4. Run on boot (optional)
+## Running the kiosk
 
-`/etc/systemd/system/face-recog.service`:
+### start.sh
+
+```bash
+./start.sh
+```
+
+Launches:
+
+1. Sources `.env` if present
+2. Activates the venv
+3. Skips Hailo-Ollama when `OPENAI_API_KEY` is set (unless
+   `PRELOAD_OLLAMA=1`)
+4. Generates a random admin password if `KIOSK_ADMIN_PASS` is unset
+5. Warms up Whisper in the background
+6. Starts `main.py` (backend) in the background, logs to
+   `/tmp/echo-backend.log`
+7. Polls `/api/state` until the Flask app is up
+8. Execs Chromium in `--kiosk --app=http://127.0.0.1:8090`
+
+The startup banner shows everything important:
+
+```
+---------------------------------------------------------------
+ ECHO SCOPE kiosk
+   project    : /home/echo/Documents/code/pi5
+   config     : .env loaded
+   openai     : key set (***k3xL)
+   mic        : sounddevice index 1
+   speaker    : plughw:CARD=PowerConf,DEV=0
+   web URL    : http://127.0.0.1:8090
+   admin user : admin
+   admin pass : kP3qN-tw    (generated -- set KIOSK_ADMIN_PASS to pin)
+---------------------------------------------------------------
+   backend    : up (pid 12345)
+   browser    : chromium (kiosk mode)
+```
+
+### stop.sh
+
+```bash
+./stop.sh                # graceful TERM, then KILL after ~3 s
+FORCE=1 ./stop.sh        # immediate KILL
+./stop.sh --ollama       # also stop the hailo-ollama daemon
+```
+
+Releases the kiosk port via `fuser` if anything's still bound.
+
+### Live logs
+
+```bash
+tail -F /tmp/echo-backend.log                          # everything
+tail -F /tmp/echo-backend.log | grep -E 'wake-word|state|GREET|asr'
+```
+
+The backend emits a partial + final transcript for every Vosk
+hypothesis so you can see exactly what it heard:
+
+```
+[wake-word] partial: 'hello'
+[wake-word] partial: 'hello echo'
+[wake-word] FINAL  : 'hello echo'
+[state] IDLE -> ACTIVE (session 2c4c54cddc77)
+[GREET] Welcome, Parakh!
+```
+
+### Auto-start on boot
+
+Add a user systemd unit at `~/.config/systemd/user/echo-scope.service`:
 
 ```ini
 [Unit]
-Description=Pi5 Face Recognition
-After=multi-user.target sound.target
+Description=ECHO SCOPE kiosk
+After=graphical-session.target
 
 [Service]
 Type=simple
-User=echo
 WorkingDirectory=/home/echo/Documents/code/pi5
-ExecStart=/home/echo/Documents/code/pi5/.venv/bin/python /home/echo/Documents/code/pi5/main.py --auto-register --no-display
+ExecStart=/home/echo/Documents/code/pi5/start.sh
 Restart=on-failure
+Environment=DISPLAY=:0
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now face-recog.service
-journalctl -u face-recog.service -f
+systemctl --user daemon-reload
+systemctl --user enable --now echo-scope
+loginctl enable-linger echo
 ```
 
-Note: registration prompts read from stdin, which won't work under systemd.
-For the headless service, pre-enrol via `enroll.py` instead and let the
-service only do recognition + greeting.
+---
+
+## Speech
+
+### Wake word (Vosk)
+
+A small Vosk model with a tight grammar listens continuously while
+the kiosk is IDLE. The grammar accepts the primary phrase plus
+`WAKE_WORD_ALIASES`:
+
+```
+"hello echo scope"  /  "hello echo"  /  "echo scope"  /  "hey echo"
+```
+
+The recogniser is recreated on every stream session, which avoids a
+known Vosk `FinalizeDecoding` bug after pause/resume cycles.
+
+While ACTIVE, the wake-word listener is **paused** entirely
+(`listener.pause()`) — saves CPU, releases the mic for chat-voice,
+and prevents a stray "hello" from confusing the session.
+
+### Chat-voice (Whisper)
+
+Tap the listening pill → the wake-word listener releases the mic →
+`ChatVoiceCapture` opens its own input stream → VAD finalises after
+`CHAT_VOICE_SILENCE_SEC` (0.9 s) of silence or `CHAT_VOICE_MAX_SEC`
+(12 s) max → ASR backend transcribes.
+
+Backend auto-precedence (`CHAT_ASR_BACKEND = "auto"`):
+
+| # | Backend | Latency (5 s clip) | Cost | Local? |
+|---|---|---|---|---|
+| 1 | **Hailo Whisper-Base** | ~250–500 ms | $0 | ✅ |
+| 2 | OpenAI Whisper API | ~1–2 s | $0.0002/min | ❌ |
+| 3 | faster-whisper tiny.en (CPU) | ~3–4 s | $0 | ✅ |
+
+For Hailo Whisper setup, see [docs/hailo_asr.md](docs/hailo_asr.md).
+
+The kiosk shows a full-frame mic overlay for **every busy phase** so
+the UI never looks frozen during processing:
+
+| State | Label |
+|---|---|
+| `listening` | "Listening…" |
+| `transcribing` | "Got it — transcribing…" |
+| `chat_pending` | "Looking that up…" |
+
+### Chat (LLM)
+
+`config.CHAT_BACKEND_ORDER = ("openai", "ollama")` tries OpenAI first,
+falls back to Hailo-Ollama (`qwen3:1.7b`) if the network call fails.
+
+Per-session budget is enforced — once a user hits
+`CHAT_MAX_QUESTIONS_PER_SESSION`, the next attempt receives a polite
+"that's enough for now" reply.
+
+### TTS
+
+`async_tts.AsyncTTS` wraps the synchronous backend with a queue so
+the camera loop never blocks waiting for `aplay`. The `on_start`
+callback fires from the worker thread immediately before audio plays,
+so toasts and spoken lines land together rather than the UI racing
+ahead of the queue.
+
+| Backend | Quality | Latency |
+|---|---|---|
+| Piper (`en_US-hfc_female-medium`) | Natural | ~200–400 ms |
+| `pyttsx3` + espeak-ng | Robotic | ~50 ms |
+
+Piper auto-loads when its ONNX voice is present; the kiosk falls back
+to pyttsx3 if not.
 
 ---
 
-## 5. Troubleshooting
+## Face recognition
+
+### Pipeline
+
+```
+SCRFD (face detect, NPU) →
+   biggest_quality_face filter (size + landmarks + frontality) →
+      LivenessChecker (optional) →
+         align_face + ArcFace embed (NPU) →
+            cosine match against gallery →
+               score >= 0.38 (loose) → recognised
+                                      → margin >= 0.15 → silent learner adds embedding
+               else → bounding box "Unknown"
+```
+
+Bounding boxes are drawn server-side onto each MJPEG frame:
+
+- 🟢 **green**: recognised — shows `Name 0.71`
+- 🟡 **yellow**: unknown / low-confidence match
+- 🟠 **orange**: low quality (too small / too off-axis)
+- 🔵 **amber**: liveness still gathering frames
+
+### Registration flow
+
+1. Unknown face stays in frame for `UNKNOWN_FRAMES_BEFORE_REGISTER`
+   (~15 frames, ~1 s) and `--auto-register` is enabled.
+2. Registration form appears with three actions:
+   - **Register**: form closes, pose capture begins, the camera
+     screen shows a `Pose 1/5` glass card while it walks through the
+     pose prompts.
+   - **No thanks**: kiosk speaks a random `decline_registration` line
+     from `messages.py` ("No worries! You can still ask me
+     anything.") and drops back to the IDLE dashboard. 120 s cooldown
+     before the prompt can auto-pop again.
+   - **✕ close**: same as No thanks.
+3. Greeting fires once per ACTIVE session per emp_id — even if you
+   leave and re-enter frame.
+
+### Photo upload (admin)
+
+`/admin` → "Register from photo" tab. Upload 1–N images of the same
+person; each one becomes an embedding. Useful for back-office
+onboarding without the live capture flow. Admin uploads run silently
+— no TTS announcement on the kiosk speaker.
+
+### Silent learning safeguards
+
+A successful greeting opportunistically adds the face's embedding
+to that person's gallery, but only if:
+
+- match score ≥ `SILENT_LEARN_MIN_SCORE` (0.70)
+- runner-up score is ≥ `SILENT_LEARN_MIN_MARGIN` (0.15) below the
+  best — closes the two-similar-people drift trap
+- new sample isn't a near-duplicate of an existing one
+  (cos ≤ `SILENT_LEARN_MAX_SIMILARITY` 0.92)
+- at most one new sample per minute per person
+- cap at `SILENT_LEARN_MAX_SAMPLES_PER_PERSON` (30) total
+
+Set `SILENT_LEARN_ENABLED = False` to disable entirely.
+
+### Liveness (optional)
+
+Disabled by default (`LIVENESS_ENABLED = False`). When on, the
+checker runs a sliding-window analysis of texture variance,
+specular highlights, pixel jitter, and relative motion — plus an
+optional active blink challenge — before greeting anyone. Effective
+against printed photos and most phone-screen replays; not bulletproof.
+See `liveness.py` for the thresholds.
+
+---
+
+## Admin UI
+
+`http://<pi>:8090/admin` — HTTP basic auth, credentials from the
+startup banner (or whatever you pinned in `.env`).
+
+Four tabs:
+
+| Tab | What's there |
+|---|---|
+| **Projects** | The list shown on the idle dashboard. Add / delete |
+| **Sessions** | Upcoming session card (next row from this table) |
+| **Employees** | Registered faces — name, sample count, rename, delete |
+| **Register from photo** | Multipart upload — 1+ images per person, silent registration |
+
+A metrics strip above the tabs summarises total / today / this week /
+best-day interaction counts.
+
+JSON API surface:
+
+```
+GET    /api/state                       full kiosk state snapshot
+GET    /events                          SSE diff stream
+GET    /camera.mjpg                     MJPEG camera feed
+POST   /api/wake                        force IDLE -> ACTIVE
+POST   /api/idle                        force ACTIVE -> IDLE
+POST   /api/listen/{start,stop}         chat-voice toggle
+POST   /api/chat                        {question: "..."}
+POST   /api/register                    {emp_id, name}             (kiosk live capture)
+POST   /api/register/photo              multipart                  (admin photo upload)
+POST   /api/register/skip               decline + cooldown
+GET    /api/projects                    list
+POST   /api/projects                    {title, description, ordering}
+POST   /api/projects/<id>               update
+DELETE /api/projects/<id>               delete
+GET    /api/sessions                    list (also POST/DELETE)
+GET    /api/employees                   list (also POST/DELETE)
+GET    /api/metrics                     {total, today, week, best_day, best_count}
+```
+
+Endpoints under `/admin` and the mutating `/api/{employees, sessions,
+projects, register/photo}` require basic auth.
+
+---
+
+## State machine
+
+Two top-level states (IDLE / ACTIVE) plus three sub-states the SPA
+toggles on while ACTIVE (`listening`, `transcribing`, `chat_pending`).
+
+| Transition | Trigger |
+|---|---|
+| IDLE → ACTIVE | wake word OR tap-anywhere on the dashboard |
+| ACTIVE → IDLE | ✕ button OR `idle_for ≥ IDLE_AFTER_LAST_INTERACTION_SEC` (30 s) OR `active_for ≥ ACTIVE_SESSION_MAX_SEC` (600 s) |
+| Engaged (resets idle timer) | `register_open` · `listening` · `chat_pending` · chat history non-empty within `CHAT_KEEPALIVE_SEC` (180 s) |
+
+During chat (`chat_pending` or `listening`), face detection is
+**skipped** on the camera worker — no NPU cycles wasted on a face
+that won't be acted on, and the unknown-face streak resets so the
+register overlay can't pop mid-conversation.
+
+`go_idle()` clears `chat_history`, `toast`, `register_open`,
+`listening`, `chat_pending`, and resumes the wake-word listener. The
+SPA hides the active screen and shows the dashboard.
+
+---
+
+## Tuning
+
+Every knob below lives in `config.py`. Tweak as needed.
+
+### Recognition
+
+| Knob | Default | Effect |
+|---|---|---|
+| `COSINE_MATCH_THRESHOLD` | 0.38 | Lower = match looser (more false positives) |
+| `UNKNOWN_FRAMES_BEFORE_REGISTER` | 15 | Frames of unknown before auto-register pops |
+| `REGISTER_DECLINE_COOLDOWN_SEC` | 120 | "No thanks" cooldown |
+| `GREET_COOLDOWN_SEC` | 30 | Min seconds between greetings (within reason — once-per-session is the actual guard) |
+
+### Session lifetime
+
+| Knob | Default | Effect |
+|---|---|---|
+| `IDLE_AFTER_LAST_INTERACTION_SEC` | 30 | Auto-IDLE timeout |
+| `CHAT_KEEPALIVE_SEC` | 180 | Chat history keeps the kiosk ACTIVE |
+| `ACTIVE_SESSION_MAX_SEC` | 600 | Hard ceiling on a single ACTIVE session |
+
+### Voice
+
+| Knob | Default | Effect |
+|---|---|---|
+| `CHAT_VOICE_SILENCE_SEC` | 0.9 | VAD silence threshold (lower = snappier cutoff) |
+| `CHAT_VOICE_MAX_SEC` | 12 | Hard cap per utterance |
+| `CHAT_VOICE_SILENCE_RMS` | 350 | int16 RMS below which audio counts as silence |
+| `WAKE_WORD_SAMPLERATE` | 16000 | Vosk decoding rate |
+
+### Chat budget
+
+| Knob | Default | Effect |
+|---|---|---|
+| `CHAT_MAX_QUESTIONS_PER_SESSION` | 5 | Per-emp_id question budget |
+| `CHAT_BACKEND_ORDER` | `("openai", "ollama")` | Failover order |
+
+---
+
+## Troubleshooting
 
 | Symptom | Likely cause / fix |
-|---------|--------------------|
-| `lspci` shows no Hailo | M.2 not seated, or PCIe Gen 3 not enabled in `config.txt`. |
-| `hailortcli scan` says "Hailo devices not found" | userspace HailoRT version skew (apt 4.23 vs H10 driver 5.x). Install HailoRT 5.x from the Developer Zone (§2.4). |
-| `Hailo1X Devices are only supported in versions 5.0.0 and above` | Same as above — upgrade HailoRT userspace. |
-| `HAILO_NOT_IMPLEMENTED` from `vdevice.configure(...)` | You're on the legacy 4.x Python API; this repo's `hailo_infer.py` already uses the 5.x `InferModel` API. Ensure you installed the 5.x cp313 wheel. |
-| `HEF Compatible for: HAILO15H` only | Wrong HEF — re-download the `HAILO10H` build (§2.7). |
-| `pip install picamera2` fails on `python-prctl` / `libcap` | Don't pip-install picamera2 — `sudo apt install python3-picamera2` and use `--system-site-packages` venv (§2.5). |
-| Preview is purple / discoloured | Older code did a redundant RGB↔BGR swap. Pull latest `main.py`. |
-| Always says "unknown" | Threshold too tight, or too few enrolment samples. Lower `COSINE_MATCH_THRESHOLD` or re-enrol with more poses. |
-| Registration triggers when I bring my hand near my face | The quality gate should be filtering this; if not, raise `QUALITY_SCORE_THRESHOLD` or `QUALITY_MIN_EYE_DISTANCE`. |
-| Greeting doesn't speak | No audio sink. `aplay -l` to check, then `raspi-config` → System → Audio. |
-| Camera freezes for ~1 s during a greeting | Resolved in current code: TTS now runs on a worker thread (`async_tts.py`). If you're still seeing freezes, you may have an old checkout — `git pull`. |
-| Idle screen says `weather: offline` | No internet at startup so the IP-geolocation lookup failed. Either bring the Pi online and restart, or set `WEATHER_LATITUDE` / `WEATHER_LONGITUDE` in `config.py` to skip the IP lookup. |
-| Chat tab says `Chat unavailable — no backend reachable` | `OPENAI_API_KEY` is unset (or no internet) AND local Ollama isn't running. Either `export OPENAI_API_KEY=...` and restart, or `sudo systemctl start ollama && ollama pull llama3.2:1b`. |
-| `QFontDatabase: Cannot find font directory ... cv2/qt/fonts` | Harmless — opencv-python's bundled Qt has no fonts. `main.py` already sets `QT_LOGGING_RULES` to silence it. To fix properly: `sudo apt install -y fonts-dejavu-core && cp /usr/share/fonts/truetype/dejavu/*.ttf .venv/lib/python3.13/site-packages/cv2/qt/fonts/`. |
-| `qt.qpa.xcb: could not connect to display` / `Aborted` | You're running as root (or otherwise have no `DISPLAY`). Best fix: run as your normal user — `exit` the root shell and `./start.sh` again. If you must run as root, `start.sh` now auto-falls-back to `--no-display`; or set `export DISPLAY=:0; export XAUTHORITY=/home/echo/.Xauthority` first. To get full graphical preview as your user, also make sure you're in `video,audio,render` groups: `sudo usermod -aG video,audio,render echo`, then log out and back in. |
-| Wake word never triggers | `arecord -l` to confirm a mic exists; `python -c "import sounddevice as sd; print(sd.query_devices())"` to see what `sounddevice` sees. Set the mic as the default ALSA capture device or export `SD_DEVICE=<index>`. |
-| `[wake-word] disabled: ...` | Either `vosk` / `sounddevice` failed to import (re-run `pip install -r requirements.txt`) or the model dir is missing (re-run §2.8). The app falls back to ACTIVE mode automatically so you can still use it. |
-| Liveness flags real people as "static" | Lighting too flat or face too far. Lower `LIVENESS_PIXEL_JITTER_MIN` and/or `LIVENESS_REL_MOTION_MIN`. Watch the HUD signals to see which one is actually failing. |
-| Liveness flags real people as "glare/screen" | Glasses or strong forehead sheen. Raise `LIVENESS_MAX_SPECULAR_RATIO` (e.g. 0.15). |
-| Liveness flags real people as "too smooth" | Camera out of focus or face too small. Lower `LIVENESS_MIN_TEXTURE_VAR` (e.g. 30). |
-| A photo on a phone/monitor *passes* liveness | Tighten the screen-attack gates: lower `LIVENESS_MAX_SPECULAR_RATIO` (e.g. 0.06) and raise `LIVENESS_MIN_TEXTURE_VAR` (e.g. 100). Read the live signals off the HUD to find the right values for your camera + lighting. |
+|---|---|
+| `Port 8090 is in use by another program` | Something else (Open WebUI?) on 8090. Override `KIOSK_PORT` in `.env` |
+| `[camera-worker] init failed: ...` | Hailo HEF wrong arch or models missing. `hailortcli parse-hef models/scrfd_10g.hef \| head -1` should say HAILO10H |
+| `Address already in use` | Previous backend didn't shut down. `./stop.sh` or `sudo fuser -k 8090/tcp` |
+| `Package 'chromium-browser' has no installation candidate` | Pi OS package is `chromium` — `sudo apt install -y chromium`. start.sh tries both |
+| `[wake-word] disabled: ...` | Vosk or sounddevice failed to import, or `models/vosk-model-small-en-us-0.15/` is missing |
+| `sqlite3.ProgrammingError: SQLite objects created in a thread...` | Re-pull — fixed in commit df21737 (`check_same_thread=False`) |
+| Recognising wrong people | Silent learning was over-eager; cleanup: `sqlite3 faces.db "DELETE FROM face_embeddings WHERE emp_id='X';"` then re-register. Confirm `SILENT_LEARN_MIN_MARGIN ≥ 0.15` |
+| Chat says "Chat unavailable — no backend reachable" | `OPENAI_API_KEY` unset AND Hailo-Ollama not running. Either paste a key in `.env` or `PRELOAD_OLLAMA=1 ./start.sh` |
+| Gibberish Whisper output | If using Hailo on Hailo-8/8L, set `HAILO_WHISPER_ADD_EMBED=true` |
+| Kiosk drops out mid-chat | Bump `CHAT_KEEPALIVE_SEC`. Watch `[state] ACTIVE -> IDLE` log line for the actual reason |
+| First chat takes 3-4 s, subsequent ones are 1 s | Whisper model load on first request. start.sh warms it in the background after launch — make sure `[asr] loading...` appears within ~5 s of boot |
+| First boot took the system into swap | Likely on the old branch with `vosk-model-en-us-0.22`. Either remove that directory or pull the latest (pinned to the small model) |
 
 ---
 
-## 6. Liveness limitations
+## Project layout
 
-The full liveness stack now combines:
-
-1. **Single-frame screen-attack gates** — specular highlight ratio +
-   texture variance (Laplacian). Defeats printed photos and held-up
-   phone/monitor screens with glare.
-2. **Temporal micro-motion** — over a sliding window the largest face
-   must show non-rigid landmark jitter and face-region pixel changes
-   beyond camera noise.
-3. **Active blink challenge** — when `LIVENESS_REQUIRE_BLINK` is on,
-   each emp_id is asked to blink before its first greeting in an ACTIVE
-   session.
-
-This combination defeats:
-
-- printed photos (still or waved),
-- phone-screen still images (with or without glare),
-- and even high-quality video replays where the played-back person
-  doesn't blink in time, since the active challenge requires a blink
-  on demand.
-
-It does **not** defeat:
-
-- A video replay where the played subject blinks within the timeout
-  window (rare and requires the attacker to anticipate the prompt).
-- A high-quality 3D mask.
-
-For higher security, plug in a dedicated anti-spoofing model
-(Silent-Face-Anti-Spoofing or similar) on the Hailo as a fourth signal.
+```
+pi5/
+├── main.py                    Camera worker + orchestrator
+├── state.py                   StateBus + KioskState dataclass
+├── messages.py                Greeting / error / fact copy (from ai_lab.txt)
+├── fun_facts.py               Background rotator for AI Fun Fact / AI Tip card
+├── frame_streamer.py          MJPEG ring buffer
+├── chat.py                    LLM client + budget tracking
+├── chat_voice.py              ChatVoiceCapture (records → transcribes)
+├── asr.py                     ChatASR backends (Hailo / OpenAI / faster-whisper / Vosk)
+├── async_tts.py               Threaded TTS queue with on_start callbacks
+├── tts.py                     Piper / pyttsx3 backends
+├── wake_word.py               Vosk wake-word listener (single-concern, paused while ACTIVE)
+├── hailo_infer.py             HailoFacePipeline (SCRFD + ArcFace + align)
+├── liveness.py                Anti-spoofing checks (optional)
+├── blink.py                   Active blink challenge (optional)
+├── quality.py                 Face size / landmark / direction helpers
+├── weather.py                 IP-geolocation + open-meteo poller
+├── database.py                FaceDB (employees, embeddings, interactions, projects, sessions)
+├── admin.py                   Legacy admin CLI (still works)
+├── admin_web.py               Legacy admin Flask app on :8081 (still works alongside the new /admin)
+├── enroll.py                  Pre-enrol from photos via CLI
+├── seed_demo.py               Populate demo projects + a session
+├── audio_utils.py             Linear resampling + device pickers
+├── config.py                  All tunable knobs
+├── web/
+│   ├── app.py                 Flask app factory
+│   ├── templates/
+│   │   ├── index.html         SPA shell (idle dashboard + active camera)
+│   │   └── admin.html         Tabbed admin
+│   └── static/
+│       ├── echo.css           Glassmorphism + 1280x800 layout + scan line
+│       └── echo.js            State subscriber + DOM mirror + overlay state machine
+├── docs/
+│   └── hailo_asr.md           Hailo Whisper setup + chip-contention notes
+├── models/                    HEFs + Vosk + Piper voices + Whisper assets
+├── start.sh                   Launcher: sources .env, starts backend, opens Chromium
+├── stop.sh                    Graceful shutdown
+├── requirements.txt
+├── .env.example               Copy to .env and fill in
+└── README.md                  This file
+```
 
 ---
 
-## 7. Privacy
+## Privacy and limitations
 
-Face embeddings are biometric data. `faces.db` is gitignored. Store it on
-an encrypted volume if this leaves a controlled environment, and only
-enrol people who have given informed consent.
+**Privacy.** Face embeddings (512-d float32 vectors) and names are
+stored in a local SQLite file (`faces.db`). No raw photos are kept —
+images live in RAM during capture, then only the embedding is
+written. Interactions store the `emp_id` and timestamp.
+
+When `CHAT_ASR_BACKEND = "openai"` or chat falls through to OpenAI,
+the audio / chat text is sent to OpenAI's API. Anthropic isn't used
+unless you wire it explicitly in `chat.py`. Switch to fully-local by
+configuring Hailo Whisper + Hailo-Ollama and leaving `OPENAI_API_KEY`
+unset.
+
+**Liveness.** When `LIVENESS_ENABLED = True`, the kiosk runs the
+texture + motion + jitter + specular pipeline plus an optional blink
+challenge. Effective against printed photos and most phone-screen
+replays; **not bulletproof**. A high-quality video on a large
+monitor with natural ambient motion will bypass the passive checks.
+The blink challenge raises the bar. For high-stakes deployments,
+combine with depth (3D structured-light or stereo) or a dedicated
+liveness model.
+
+**Recognition drift.** ArcFace is a 512-d embedding cosine-matched
+against a per-person gallery. Silent learning expands the gallery
+opportunistically but is gated by score + runner-up margin. False
+positives still happen — especially for genuinely similar people.
+Clean drifted galleries with `sqlite3 faces.db` or the Employees
+admin tab.
+
+**Chat budget.** Hard-capped per ACTIVE session at
+`CHAT_MAX_QUESTIONS_PER_SESSION`. A persistent visitor can't run up a
+bill by camping in front of the kiosk.
+
+---
+
+## Contributing / development notes
+
+- **Branches**: feature work happens on
+  `claude/<topic>` branches. Merge to the default branch via PR.
+- **Hooks**: there are none — `git commit` runs straight through.
+- **Tests**: there's no automated test suite yet. The validation
+  surface is the kiosk itself + watching the backend log.
+- **Hot-reload**: Flask runs without the reloader (`use_reloader=False`)
+  because the camera worker can't be re-spawned cleanly. For SPA
+  iteration, Ctrl+F5 in Chromium hard-reloads the CSS / JS.
+- **Style**: 4-space indent, type hints where useful, no docstrings
+  on obvious functions.
+
+See `docs/hailo_asr.md` for Hailo Whisper integration specifics.
