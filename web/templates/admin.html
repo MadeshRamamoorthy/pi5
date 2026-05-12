@@ -175,6 +175,65 @@ or paste a few sentences of bio text directly..."></textarea>
   </div>
 </div>
 
+<!-- Edit-project modal -->
+<div id="project-edit-modal" class="edit-modal" hidden>
+  <div class="edit-card">
+    <header>
+      <h2>Edit project</h2>
+      <button type="button" class="close-x" onclick="closeProjectEdit()">&times;</button>
+    </header>
+    <form id="project-edit-form">
+      <label>ID
+        <input type="text" id="edit-project-id" readonly>
+      </label>
+      <label>Title
+        <input type="text" id="edit-project-title" required>
+      </label>
+      <label>Description
+        <input type="text" id="edit-project-description">
+      </label>
+      <label>Order
+        <input type="text" id="edit-project-ordering" placeholder="0">
+      </label>
+      <div class="form-actions">
+        <button type="submit">Save</button>
+      </div>
+      <p id="edit-project-status" class="sub"></p>
+    </form>
+  </div>
+</div>
+
+<!-- Edit-session modal -->
+<div id="session-edit-modal" class="edit-modal" hidden>
+  <div class="edit-card">
+    <header>
+      <h2>Edit session</h2>
+      <button type="button" class="close-x" onclick="closeSessionEdit()">&times;</button>
+    </header>
+    <form id="session-edit-form">
+      <label>ID
+        <input type="text" id="edit-session-id" readonly>
+      </label>
+      <label>Title
+        <input type="text" id="edit-session-title" required>
+      </label>
+      <label>Starts at
+        <input type="datetime-local" id="edit-session-starts" required>
+      </label>
+      <label>Ends at
+        <input type="datetime-local" id="edit-session-ends">
+      </label>
+      <label>Notes
+        <input type="text" id="edit-session-notes">
+      </label>
+      <div class="form-actions">
+        <button type="submit">Save</button>
+      </div>
+      <p id="edit-session-status" class="sub"></p>
+    </form>
+  </div>
+</div>
+
 <section class="tab-panel" data-panel="photo-register">
 <h2>Register from photo</h2>
 <p class="sub">Upload one or more photos of the same person. Each image
@@ -249,16 +308,21 @@ async function refresh() {
   } catch (e) { /* ignore */ }
 
   const projects = await fetch("/api/projects").then(r => r.json());
+  window.__lastProjects = projects;
   const ptb = document.querySelector("#projects-table tbody");
   ptb.innerHTML = "";
   for (const p of projects) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${p.id}</td><td>${escape(p.title)}</td>
       <td>${escape(p.description || "")}</td><td>${p.ordering}</td>
-      <td><button onclick="del('projects', ${p.id})" class="danger">Delete</button></td>`;
+      <td>
+        <button onclick="openProjectEdit(${p.id})">Edit</button>
+        <button onclick="del('projects', ${p.id})" class="danger">Delete</button>
+      </td>`;
     ptb.appendChild(tr);
   }
   const sessions = await fetch("/api/sessions").then(r => r.json());
+  window.__lastSessions = sessions;
   const stb = document.querySelector("#sessions-table tbody");
   stb.innerHTML = "";
   for (const s of sessions) {
@@ -266,7 +330,10 @@ async function refresh() {
     tr.innerHTML = `<td>${s.id}</td><td>${escape(s.title)}</td>
       <td>${escape(s.starts_at)}</td><td>${escape(s.ends_at || "")}</td>
       <td>${escape(s.notes || "")}</td>
-      <td><button onclick="del('sessions', ${s.id})" class="danger">Delete</button></td>`;
+      <td>
+        <button onclick="openSessionEdit(${s.id})">Edit</button>
+        <button onclick="del('sessions', ${s.id})" class="danger">Delete</button>
+      </td>`;
     stb.appendChild(tr);
   }
 }
@@ -274,6 +341,95 @@ function escape(s) {
   return String(s).replace(/[&<>"]/g, c =>
     ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 }
+// ---- project edit ----------------------------------------------------
+function openProjectEdit(id) {
+  const p = (window.__lastProjects || []).find(x => x.id === id);
+  if (!p) return;
+  document.getElementById("edit-project-id").value          = p.id;
+  document.getElementById("edit-project-title").value       = p.title || "";
+  document.getElementById("edit-project-description").value = p.description || "";
+  document.getElementById("edit-project-ordering").value    = (p.ordering ?? 0);
+  document.getElementById("edit-project-status").textContent = "";
+  document.getElementById("project-edit-modal").hidden = false;
+}
+function closeProjectEdit() {
+  document.getElementById("project-edit-modal").hidden = true;
+}
+document.getElementById("project-edit-form").addEventListener("submit",
+  async (ev) => {
+    ev.preventDefault();
+    const id = document.getElementById("edit-project-id").value;
+    const body = {
+      title:       document.getElementById("edit-project-title").value.trim(),
+      description: document.getElementById("edit-project-description").value.trim(),
+      ordering:    parseInt(document.getElementById("edit-project-ordering").value || "0", 10),
+    };
+    const status = document.getElementById("edit-project-status");
+    status.textContent = "Saving…";
+    const r = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) {
+      status.textContent = "Saved.";
+      closeProjectEdit();
+      refresh();
+    } else {
+      status.textContent = `Save failed: ${await r.text()}`;
+    }
+});
+
+// ---- session edit ----------------------------------------------------
+function openSessionEdit(id) {
+  const s = (window.__lastSessions || []).find(x => x.id === id);
+  if (!s) return;
+  document.getElementById("edit-session-id").value     = s.id;
+  document.getElementById("edit-session-title").value  = s.title || "";
+  document.getElementById("edit-session-starts").value = toDateTimeLocal(s.starts_at);
+  document.getElementById("edit-session-ends").value   = toDateTimeLocal(s.ends_at);
+  document.getElementById("edit-session-notes").value  = s.notes || "";
+  document.getElementById("edit-session-status").textContent = "";
+  document.getElementById("session-edit-modal").hidden = false;
+}
+function closeSessionEdit() {
+  document.getElementById("session-edit-modal").hidden = true;
+}
+function toDateTimeLocal(s) {
+  // Backend stores "YYYY-MM-DD HH:MM:SS"; <input type="datetime-local">
+  // wants "YYYY-MM-DDTHH:MM". Convert both ways.
+  if (!s) return "";
+  return s.replace(" ", "T").slice(0, 16);
+}
+function fromDateTimeLocal(s) {
+  // "YYYY-MM-DDTHH:MM" -> "YYYY-MM-DD HH:MM:00"
+  if (!s) return null;
+  return s.replace("T", " ") + ":00";
+}
+document.getElementById("session-edit-form").addEventListener("submit",
+  async (ev) => {
+    ev.preventDefault();
+    const id = document.getElementById("edit-session-id").value;
+    const body = {
+      title:     document.getElementById("edit-session-title").value.trim(),
+      starts_at: fromDateTimeLocal(document.getElementById("edit-session-starts").value),
+      ends_at:   fromDateTimeLocal(document.getElementById("edit-session-ends").value),
+      notes:     document.getElementById("edit-session-notes").value.trim(),
+    };
+    const status = document.getElementById("edit-session-status");
+    status.textContent = "Saving…";
+    const r = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) {
+      status.textContent = "Saved.";
+      closeSessionEdit();
+      refresh();
+    } else {
+      status.textContent = `Save failed: ${await r.text()}`;
+    }
+});
+
 async function del(kind, id) {
   if (!confirm("Delete?")) return;
   await fetch(`/api/${kind}/${id}`, { method: "DELETE" });
