@@ -332,10 +332,14 @@ class CameraWorker(threading.Thread):
             try:
                 while True:
                     req = self.register_q.get_nowait()
-                    # "Skip" sentinel: user declined. Speak one of the
-                    # decline_registration lines from messages.py, close
-                    # the overlay, and drop straight back to the
-                    # dashboard (IDLE) -- no point hanging around.
+                    # "Skip" sentinel: user declined. Speak a decline
+                    # line and close the overlay -- but stay ACTIVE so
+                    # the unregistered visitor can still use chat.
+                    # IDLE will fire naturally after the configured
+                    # timeout if they don't engage. The 120 s
+                    # register-decline cooldown prevents the form from
+                    # immediately re-popping while the same unknown
+                    # face is still in frame.
                     if isinstance(req, dict) and req.get("action") == "skip":
                         self._register_declined_at = time.time()
                         self.state.update(register_open=False,
@@ -343,7 +347,7 @@ class CameraWorker(threading.Thread):
                         self.greeter.say(messages.random_registration_prompt(
                             "decline_registration",
                         ))
-                        self.idle_event.set()
+                        last_interaction_at = time.time()
                         continue
                     if kiosk_state != "ACTIVE":
                         continue
@@ -867,7 +871,7 @@ def main():
     fun_facts.start()
 
     tts = AsyncTTS(make_backend())
-    chat = ChatClient()
+    chat = ChatClient(db=db)
     state.update(chat_backend=chat.status(),
                  chat_remaining=config.CHAT_MAX_QUESTIONS_PER_SESSION)
 

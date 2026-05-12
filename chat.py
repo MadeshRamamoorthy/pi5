@@ -31,12 +31,64 @@ import requests
 import config
 
 
-SYSTEM_PROMPT = (
-    "You are Echo, a friendly receptionist at a small engineering studio. "
-    "Keep answers short -- two or three sentences -- and conversational. "
-    "If the user asks about projects on display, suggest they look at the "
-    "screen on the right of the kiosk."
+BASE_SYSTEM_PROMPT = (
+    "You are ECHO SCOPE, a friendly AI kiosk at the Infosys Calgary AI "
+    "Club. Keep answers short -- two or three sentences -- and "
+    "conversational. Sound like a person, not a brochure."
 )
+
+
+def build_system_prompt(db=None) -> str:
+    """Return the system prompt with the current projects + next session
+    folded in. When the user asks "what's on display today?" or "what's
+    the next session?" the LLM can answer from this context instead of
+    hallucinating. Other questions go through normally."""
+    if db is None:
+        return BASE_SYSTEM_PROMPT
+    try:
+        projects = db.list_projects() or []
+        session_row = db.next_session()
+    except Exception:
+        return BASE_SYSTEM_PROMPT
+
+    parts = [BASE_SYSTEM_PROMPT]
+    if projects:
+        lines = []
+        for r in projects:
+            title = (r[1] or "").strip()
+            desc = (r[2] or "").strip()
+            if not title:
+                continue
+            lines.append(f"  - {title}" + (f": {desc}" if desc else ""))
+        if lines:
+            parts.append(
+                "Projects on display today (read these out if the user "
+                "asks 'what's on display' / 'projects' / 'what can I see "
+                "today'):\n" + "\n".join(lines)
+            )
+    if session_row:
+        sid, title, starts_at, ends_at, notes = session_row
+        when = (starts_at or "").replace("T", " ")
+        if ends_at:
+            when += f" - {ends_at}"
+        ses = (
+            f"Next upcoming session (read this out if the user asks "
+            f"'what's the next session' / 'what's coming up' / 'when is "
+            f"the next event'):\n  Title: {title}\n  When: {when}"
+        )
+        if notes:
+            ses += f"\n  Notes: {notes}"
+        parts.append(ses)
+    parts.append(
+        "Only use the lists above for questions about projects or "
+        "sessions. For any other question, answer normally and "
+        "conversationally."
+    )
+    return "\n\n".join(parts)
+
+
+# Backwards compat for any external importer.
+SYSTEM_PROMPT = BASE_SYSTEM_PROMPT
 
 AVAILABILITY_TTL_SEC = 5.0
 
@@ -180,7 +232,12 @@ class ChatBudget:
 
 
 class ChatClient:
-    def __init__(self):
+    def __init__(self, db=None):
+        # When `db` is set, every chat call builds a system prompt that
+        # includes the current projects + next session row -- so the
+        # LLM can answer those questions from local truth instead of
+        # hallucinating. Other questions go through normally.
+        self.db = db
         self.budget = ChatBudget(config.CHAT_MAX_QUESTIONS_PER_SESSION)
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="chat",
@@ -223,8 +280,9 @@ class ChatClient:
         # Reserve a slot before calling the backend so we don't get charged
         # for a network round-trip the user can't actually use.
         self.budget.consume(emp_id)
+        system = build_system_prompt(self.db)
         try:
-            answer = backend.complete(question, SYSTEM_PROMPT)
+            answer = backend.complete(question, system)
         except Exception as exc:  # roll back budget on error
             self.budget._used[emp_id] = max(0, self.budget._used.get(emp_id, 1) - 1)
             raise ChatBackendError(f"{backend.label}: {exc}") from exc
