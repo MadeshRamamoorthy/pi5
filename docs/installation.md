@@ -71,6 +71,13 @@ pip install -r requirements.txt
 `libcamera` to the venv. Without it you'll see `ImportError` at
 startup.
 
+> **Heads-up on PEP 668.** On Trixie, running `pip install` *outside*
+> the venv now fails with `error: externally-managed-environment`.
+> Always activate the venv first (`source .venv/bin/activate`) before
+> any `pip install`. If you ever genuinely need to install into the
+> system Python, use `pip install --break-system-packages` — but for
+> this project, the venv is what you want.
+
 ## 4. Models
 
 All required + optional files live in `models/`.
