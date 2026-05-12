@@ -21,6 +21,7 @@
 | Wake word never fires | `tail -F /tmp/echo-backend.log \| grep wake-word` to see what Vosk hears. If it's `"the"` / `"a"` / nothing, the mic isn't getting your voice — check `SD_DEVICE` |
 | Browser shows "ERR_CONNECTION_REFUSED" | Backend hasn't started. Look for `Error: backend didn't come up` in the terminal where `start.sh` ran |
 | `error: externally-managed-environment` on `pip install` | PEP 668 on Trixie. Activate the venv first: `source .venv/bin/activate && pip install ...`. The venv writes inside `.venv/lib/python3.13/`, leaving the apt-managed system Python alone |
+| `HailoRTException: ... HAILO_OUT_OF_PHYSICAL_DEVICES (74)` when chat-voice starts | Two VDevices want exclusive access to the NPU. Fixed in `hailo_infer.py` — our `HailoFacePipeline` now creates the VDevice with `scheduling_algorithm=ROUND_ROBIN` and `group_id="SHARED"`, matching hailo-apps's whisper pipeline so they share the chip. Pull the latest |
 
 ## Verifying the chip + models
 

@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from hailo_platform import HEF, FormatType, VDevice
+from hailo_platform import HEF, FormatType, HailoSchedulingAlgorithm, VDevice
 
 
 @dataclass
@@ -70,7 +70,16 @@ class HailoFacePipeline:
     """Holds detector + embedder on a shared VDevice."""
 
     def __init__(self, detector_hef: Path, embedder_hef: Path):
-        self.vdevice = VDevice()
+        # ROUND_ROBIN + a shared group_id lets another VDevice (e.g.
+        # Hailo's Whisper pipeline at hailo-apps/.../whisper_pipeline.py,
+        # which also uses group_id="SHARED" with ROUND_ROBIN) coexist
+        # on the same physical NPU. Without this we hit
+        # HAILO_OUT_OF_PHYSICAL_DEVICES the moment the user tapped the
+        # chat mic.
+        params = VDevice.create_params()
+        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        params.group_id = "SHARED"
+        self.vdevice = VDevice(params)
         self.detector = _HailoModel(detector_hef, self.vdevice)
         self.embedder = _HailoModel(embedder_hef, self.vdevice)
 

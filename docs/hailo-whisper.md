@@ -136,13 +136,27 @@ The Hailo-10H currently hosts:
 - Optionally Hailo-Ollama (`qwen3:1.7b`) — only when
   `PRELOAD_OLLAMA=1` or `OPENAI_API_KEY` is unset
 
+### How they share the chip
+
+Both pipelines create their HailoRT VDevice with
+`scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN` and
+`group_id = "SHARED"`:
+
+- hailo-apps's `whisper_pipeline.py` does this in its own code.
+- Our `HailoFacePipeline` (in `hailo_infer.py`) is configured to
+  match.
+
+With matching group_id + scheduling, HailoRT multiplexes the
+physical NPU between the two VDevices. Without it, the second one
+fails with `HAILO_OUT_OF_PHYSICAL_DEVICES (74)`.
+
 In the common case (OpenAI for chat, Hailo for face + Whisper):
 
-- Face recognition and Whisper rarely overlap. The camera worker
-  **skips** recognition during a chat exchange (the `chat_busy`
-  check in `main.py`), so the NPU is free for Whisper while the user
-  is talking. Whisper completes in <1 s and face recognition resumes
-  immediately.
+- Face recognition and Whisper rarely overlap anyway. The camera
+  worker **skips** recognition during a chat exchange (the
+  `chat_busy` check in `main.py`), so the NPU is exclusively
+  Whisper's while the user is talking. Whisper completes in
+  <1 s and face recognition resumes immediately.
 
 If you also load Hailo-Ollama, the NPU schedules all three workloads
 serially. The kiosk doesn't pre-load Ollama when `OPENAI_API_KEY`
