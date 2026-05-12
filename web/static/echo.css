@@ -693,6 +693,16 @@ body[data-listening="true"] .listening-pill .live-dot {
 .listen-overlay {
   background: rgba(6, 14, 28, 0.92);
 }
+/* Processing variant: dimmer outer ring, label colour shifts, no tap
+   handler. The user can't cancel transcription / chat anyway, so a
+   tap on the overlay would otherwise look broken. */
+.listen-overlay.processing {
+  cursor: default;
+}
+.listen-overlay.processing .listen-label { color: var(--accent); }
+.listen-overlay.processing .mic-rings .mic-core {
+  background: rgba(0, 212, 255, 0.85);
+}
 .listen-stage {
   display: flex;
   flex-direction: column;

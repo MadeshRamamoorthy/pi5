@@ -886,6 +886,7 @@ def main():
             out_queue=chat_q,
             wake_listener=listener,
             on_listening_changed=lambda on: state.update(listening=on),
+            on_transcribing_changed=lambda on: state.update(transcribing=on),
         )
         print(f"[chat-voice] using {config.CHAT_ASR_BACKEND}")
     except ChatVoiceCaptureError as exc:

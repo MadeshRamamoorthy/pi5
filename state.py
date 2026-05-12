@@ -63,8 +63,10 @@ class KioskState:
         "content": "Welcome to ECHO SCOPE."
     })
 
-    # Chat-voice listening state.
+    # Chat-voice state. listening = mic is recording. transcribing =
+    # audio captured, waiting for Whisper / OpenAI to return text.
     listening: bool = False
+    transcribing: bool = False
     # Whisper / OpenAI label, e.g. "OpenAI · gpt-4o-mini"
     chat_backend: str = ""
     chat_history: list = field(default_factory=list)
@@ -136,6 +138,7 @@ class StateBus:
             state="IDLE",
             state_since=time.time(),
             listening=False,
+            transcribing=False,
             register_open=False,
             chat_pending=False,
             chat_history=[],

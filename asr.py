@@ -147,6 +147,13 @@ class VoskFreeformASR(ChatASR):
 
 def make_chat_asr() -> ChatASR:
     backend = config.CHAT_ASR_BACKEND.lower()
+    if backend == "auto":
+        # OpenAI Whisper is ~2-3x faster end-to-end than CPU-bound
+        # faster-whisper on the Pi 5 (1-2 s round-trip vs 3-4 s
+        # decode). Default to it whenever a key is available; fall
+        # back to local faster-whisper for offline operation.
+        backend = "openai" if os.environ.get("OPENAI_API_KEY") else "faster-whisper"
+        print(f"[asr] auto-selected backend: {backend}")
     if backend in ("faster-whisper", "fasterwhisper", "whisper"):
         return FasterWhisperASR()
     if backend in ("openai", "openai-whisper"):

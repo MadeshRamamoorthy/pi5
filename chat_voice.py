@@ -51,6 +51,7 @@ class ChatVoiceCapture:
         wake_listener=None,
         device: int | None = None,
         on_listening_changed: Callable[[bool], None] | None = None,
+        on_transcribing_changed: Callable[[bool], None] | None = None,
     ):
         if _IMPORT_ERROR is not None:
             raise ChatVoiceCaptureError(
@@ -60,6 +61,7 @@ class ChatVoiceCapture:
         self._out_q = out_queue
         self._listener = wake_listener
         self._on_changed = on_listening_changed
+        self._on_transcribing = on_transcribing_changed
         try:
             self._device, self._native_rate = pick_input_device(device)
         except Exception as exc:  # noqa: BLE001
@@ -94,6 +96,13 @@ class ChatVoiceCapture:
             except Exception:
                 pass
 
+    def _set_transcribing(self, on: bool) -> None:
+        if self._on_transcribing:
+            try:
+                self._on_transcribing(on)
+            except Exception:
+                pass
+
     def _run(self) -> None:
         if self._listener is not None:
             self._listener.pause()
@@ -110,11 +119,18 @@ class ChatVoiceCapture:
 
         if not pcm:
             return
+        # Transcribing flag stays true for the entire ASR call -- on
+        # CPU faster-whisper this is 3-4 s of dead time the user would
+        # otherwise see as a frozen UI. With it set the SPA can keep
+        # the listen overlay up with a "Processing..." label.
+        self._set_transcribing(True)
         try:
             text = self._asr.transcribe(pcm, self._native_rate)
         except Exception as exc:  # noqa: BLE001
             print(f"[chat-voice] transcribe failed: {exc!r}")
             return
+        finally:
+            self._set_transcribing(False)
         if text:
             self._out_q.put(text)
 

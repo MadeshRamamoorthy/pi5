@@ -206,22 +206,25 @@ CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 # kiosk doesn't pay the memory bill until the user actually opens
 # chat voice mode.
 #
-#   "faster-whisper" -> CTranslate2 + tiny.en, ~250 MB resident, ~3 s
-#                       per 10 s of speech on Pi 5 CPU. Default.
+#   "auto"           -> use OpenAI Whisper when OPENAI_API_KEY is set
+#                       (typical 1-2 s round-trip), otherwise fall back
+#                       to faster-whisper. Default.
+#   "faster-whisper" -> CTranslate2 + tiny.en, ~250 MB resident, ~3-4 s
+#                       per 10 s of speech on Pi 5 CPU.
 #   "openai"         -> openai.audio.transcriptions.create (cloud). No
 #                       local resources but a network round-trip per
 #                       question and a paid API call.
 #   "vosk"           -> legacy: reuse the small Vosk model in a
 #                       no-grammar recognizer. Lower quality, kept as
 #                       an offline fallback.
-CHAT_ASR_BACKEND = "faster-whisper"
+CHAT_ASR_BACKEND = "auto"
 WHISPER_MODEL = "tiny.en"           # "tiny.en" | "base.en" | "small.en"
 WHISPER_DEVICE = "cpu"              # Pi 5 has no GPU; keep "cpu".
 WHISPER_COMPUTE_TYPE = "int8"       # 8-bit quantisation for memory.
 WHISPER_CACHE_DIR = MODELS_DIR / "whisper"
 # Voice capture timing knobs.
 CHAT_VOICE_MAX_SEC = 12.0           # hard cap on a single utterance.
-CHAT_VOICE_SILENCE_SEC = 1.5        # auto-finalise after this much silence.
+CHAT_VOICE_SILENCE_SEC = 0.9        # auto-finalise after this much silence.
 CHAT_VOICE_SILENCE_RMS = 350        # int16 RMS threshold below which audio
                                     # counts as silence.
 

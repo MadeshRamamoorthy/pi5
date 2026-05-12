@@ -84,9 +84,9 @@
     if ("listening" in diff) {
       document.body.dataset.listening = diff.listening ? "true" : "false";
       bind("listen-label", diff.listening ? "Listening..." : "Tap to speak");
-      // Big chat-mic overlay sits over the camera while recording.
-      const lo = $("#listen-overlay");
-      if (lo) lo.hidden = !diff.listening;
+    }
+    if (("listening" in diff) || ("transcribing" in diff) || ("chat_pending" in diff)) {
+      refreshProcessingOverlay();
     }
     if ("weather" in diff)        renderWeather(diff.weather);
     if ("metrics" in diff)        renderMetrics(diff.metrics);
@@ -115,11 +115,41 @@
   // pre-transcript layout.
   function refreshChatMode() {
     const inChat = !!(
-      state.listening ||
-      state.chat_pending ||
+      state.listening || state.transcribing || state.chat_pending ||
       (Array.isArray(state.chat_history) && state.chat_history.length > 0)
     );
     document.body.dataset.chatMode = inChat ? "true" : "false";
+  }
+
+  // Full-screen pulsing-mic overlay covers all phases where the kiosk
+  // is busy with a chat exchange. Each phase gets its own label so
+  // the user knows what's happening even when the audio is being
+  // generated -- without this they'd just see a frozen camera screen
+  // and assume the kiosk crashed.
+  function refreshProcessingOverlay() {
+    const lo = $("#listen-overlay");
+    const label = $(".listen-stage .listen-label");
+    const hint  = $(".listen-stage .listen-hint");
+    if (!lo) return;
+    if (state.listening) {
+      label && (label.textContent = "Listening…");
+      hint  && (hint.textContent  = "Speak now — tap anywhere to stop");
+      lo.classList.remove("processing");
+      lo.hidden = false;
+    } else if (state.transcribing) {
+      label && (label.textContent = "Got it — transcribing…");
+      hint  && (hint.textContent  = "Turning your words into text");
+      lo.classList.add("processing");
+      lo.hidden = false;
+    } else if (state.chat_pending) {
+      label && (label.textContent = "Looking that up…");
+      hint  && (hint.textContent  = "ECHO is composing a reply");
+      lo.classList.add("processing");
+      lo.hidden = false;
+    } else {
+      lo.hidden = true;
+      lo.classList.remove("processing");
+    }
   }
 
   function bind(name, value) {
@@ -312,9 +342,12 @@
     if (state.listening) post("/api/listen/stop");
     else                 post("/api/listen/start");
   });
-  // Tap anywhere on the listen overlay to stop listening.
+  // Tap the listen overlay to stop the mic. No-op once the kiosk has
+  // moved past listening into transcribing / chat-pending -- those
+  // phases can't be cancelled, so a tap should be ignored rather than
+  // look like a broken control.
   $("#listen-overlay")?.addEventListener("click", () => {
-    if (state.listening) post("/api/listen/stop");
+    if (state.listening && !state.transcribing) post("/api/listen/stop");
   });
 
   const chatForm = $("#chat-form");
