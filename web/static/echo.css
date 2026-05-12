@@ -586,6 +586,11 @@ body[data-listening="true"] .listening-pill .live-dot {
   animation: toast-in 0.25s ease;
   z-index: 40;
 }
+/* The chat panel already shows the same line in the transcript --
+   no need to also pop a toast banner over it. Toasts stay enabled
+   for greetings (which happen before any chat history exists, so
+   chat-mode is still false). */
+body[data-chat-mode="true"] .toast { display: none !important; }
 @keyframes toast-in {
   from { opacity: 0; transform: translate(-50%, -8px); }
   to   { opacity: 1; transform: translate(-50%, 0); }
