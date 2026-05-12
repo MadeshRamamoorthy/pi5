@@ -215,7 +215,7 @@ CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 #                       Needs:
 #                         pip install hailo-apps
 #                         + encoder/decoder HEFs in models/ (see docs/
-#                           hailo_asr.md for download instructions)
+#                           hailo-whisper.md for download instructions)
 #   "faster-whisper" -> CTranslate2 + tiny.en, ~250 MB resident, ~3-4 s
 #                       per 10 s of speech on Pi 5 CPU.
 #   "openai"         -> openai.audio.transcriptions.create (cloud).
