@@ -39,10 +39,18 @@ Force a specific backend: `CHAT_ASR_BACKEND = "hailo"` (or
 # Prereqs from Hailo's README:
 sudo apt install -y ffmpeg libportaudio2
 
-# Install hailo-apps with the speech-recognition extra. This pulls
-# in transformers / numpy / soundfile dependencies AND lets the
-# bundled download script fetch the HEFs + .npy assets on first run.
-pip install 'hailo-apps[speech-rec]'
+# Activate the project venv (PEP 668 means pip install must run inside it
+# on Trixie):
+cd ~/Documents/code/pi5
+source .venv/bin/activate
+
+# Clone hailo-apps and install with the speech-recognition extras.
+# It's NOT on PyPI -- pip install 'hailo-apps[speech-rec]' from the
+# index will fail with "No matching distribution found".
+cd ~/Documents/code
+git clone https://github.com/hailo-ai/hailo-apps.git
+cd hailo-apps
+pip install -e '.[speech-rec]'
 
 # Smoke-test using Hailo's own CLI before wiring it into the kiosk.
 # It downloads the models on first invocation (~50-150 MB).
@@ -140,7 +148,9 @@ is set, so usually you don't pay this cost.
   set `HAILO_WHISPER_ENCODER_HEF` / `HAILO_WHISPER_DECODER_HEF` /
   `HAILO_WHISPER_NPY_DIR` to point at them.
 - **`ImportError: hailo_apps...whisper_pipeline`** — install the
-  speech-rec extra: `pip install 'hailo-apps[speech-rec]'`.
+  speech-rec extra. Clone `hailo-ai/hailo-apps` and run
+  `pip install -e '.[speech-rec]'` inside the venv -- it isn't on
+  PyPI.
 - **HailoRT busy errors at decode** — another model holds the
   NPU. Check `pgrep -fl hailo-ollama` and stop it if you don't need
   offline chat.

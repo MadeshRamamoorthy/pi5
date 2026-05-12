@@ -87,7 +87,7 @@ All required + optional files live in `models/`.
 | `scrfd_10g.hef` | Face detector (Hailo) | <https://github.com/hailo-ai/hailo_model_zoo/releases> · filter HAILO10H |
 | `arcface_mobilefacenet.hef` | Face embedder (Hailo) | same source |
 | `vosk-model-small-en-us-0.15/` | Wake-word recogniser | `wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip` and unzip into `models/` |
-| `whisper-base-encoder.hef`, `whisper-base-decoder.hef`, `whisper-base-assets/` | Hailo Whisper STT (recommended) | `pip install 'hailo-apps[speech-rec]'` auto-downloads on first use — symlink or copy into `models/`. See [Hailo Whisper](hailo-whisper.md) |
+| `whisper-base-encoder.hef`, `whisper-base-decoder.hef`, `whisper-base-assets/` | Hailo Whisper STT (recommended) | Clone `hailo-ai/hailo-apps` and `pip install -e '.[speech-rec]'` (it's not on PyPI). Hailo's own CLI auto-downloads the assets on first run. Symlink or copy into `models/`. See [Hailo Whisper](hailo-whisper.md) |
 | `en_US-hfc_female-medium.onnx` + `.json` | Piper TTS voice | `python -m piper.download_voices en_US-hfc_female-medium --data-dir models/` |
 
 ### Verify Hailo HEF compatibility

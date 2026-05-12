@@ -232,11 +232,12 @@ CHAT_ASR_BACKEND = "auto"
 # support.
 HAILO_WHISPER_MODEL = "base"
 # Files. The Pi 5 + AI HAT 2+ setup unpacks them under models/. If
-# you installed hailo-apps with `pip install 'hailo-apps[speech-rec]'`
-# the package downloads them into its own data dir on first run --
-# point these paths there. The auto-selector requires all three to
+# you installed hailo-apps from source (it's NOT on PyPI -- clone the
+# repo and `pip install -e '.[speech-rec]'`) the package downloads them
+# into its own data dir on first run. Point these paths there or
+# symlink them into models/. The auto-selector requires all three to
 # exist (HEFs + the decoder tokenization .npy directory) before
-# choosing hailo-whisper.
+# choosing hailo-whisper. See docs/hailo-whisper.md.
 HAILO_WHISPER_ENCODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-encoder.hef"
 HAILO_WHISPER_DECODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-decoder.hef"
 HAILO_WHISPER_NPY_DIR     = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-assets"

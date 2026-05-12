@@ -73,9 +73,10 @@ file. The wrapper prints the expected path:
 
 ```
 Hailo Whisper HEF not found: models/whisper-base-encoder.hef
-Install hailo-apps with the speech-rec extra to auto-download
-the models on first run:
-  pip install 'hailo-apps[speech-rec]'
+Install hailo-apps (not on PyPI -- clone the repo):
+  git clone https://github.com/hailo-ai/hailo-apps.git
+  cd hailo-apps
+  pip install -e '.[speech-rec]'
 ```
 
 ## Resetting everything

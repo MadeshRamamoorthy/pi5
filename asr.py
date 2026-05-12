@@ -209,20 +209,23 @@ class HailoWhisperASR(ChatASR):
             if not Path(path).is_file():
                 raise RuntimeError(
                     f"Hailo Whisper HEF not found: {path}\n"
-                    "Install hailo-apps with the speech-rec extra to "
-                    "auto-download the models on first run:\n"
-                    "  pip install 'hailo-apps[speech-rec]'\n"
-                    "Or override HAILO_WHISPER_ENCODER_HEF / "
+                    "Install hailo-apps (not on PyPI -- clone the repo):\n"
+                    "  git clone https://github.com/hailo-ai/hailo-apps.git\n"
+                    "  cd hailo-apps && pip install -e '.[speech-rec]'\n"
+                    "Hailo's CLI auto-downloads the HEFs on first run; "
+                    "symlink them into models/ or override "
+                    "HAILO_WHISPER_ENCODER_HEF / "
                     "HAILO_WHISPER_DECODER_HEF in config.py."
                 )
         if not Path(self._npy_dir).is_dir():
             raise RuntimeError(
                 f"Hailo Whisper assets directory not found: {self._npy_dir}\n"
                 "This holds the decoder tokenization .npy files that "
-                "hailo-apps ships alongside the HEFs. Install with "
-                "`pip install 'hailo-apps[speech-rec]'` (which downloads "
-                "the assets on first run) or set HAILO_WHISPER_NPY_DIR "
-                "in config.py."
+                "hailo-apps ships alongside the HEFs. Clone hailo-apps "
+                "from https://github.com/hailo-ai/hailo-apps and "
+                "`pip install -e '.[speech-rec]'`, or set "
+                "HAILO_WHISPER_NPY_DIR in config.py to where the assets "
+                "already live."
             )
 
         try:
@@ -231,11 +234,11 @@ class HailoWhisperASR(ChatASR):
             from hailo_apps.python.standalone_apps.speech_recognition.postprocessing import clean_transcription
         except ImportError as exc:
             raise RuntimeError(
-                "Hailo Whisper backend requires hailo-apps with the "
-                "speech-rec extra:\n"
-                "  pip install 'hailo-apps[speech-rec]'\n"
-                "or clone https://github.com/hailo-ai/hailo-apps and "
-                "`pip install -e \".[speech-rec]\"`.\n"
+                "Hailo Whisper backend requires hailo-apps. It isn't on "
+                "PyPI -- clone the repo and install with the speech-rec "
+                "extra:\n"
+                "  git clone https://github.com/hailo-ai/hailo-apps.git\n"
+                "  cd hailo-apps && pip install -e '.[speech-rec]'\n"
                 f"Import error: {exc!r}"
             ) from exc
 
