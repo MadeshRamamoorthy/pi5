@@ -4,11 +4,18 @@
 decoder HEFs and a Python pipeline that runs the whole STT path on
 the NPU.
 
-| Variant | Approx latency on Hailo-10H | Hardware support |
-|---------|-----------------------------|------------------|
-| Whisper-Tiny  | ~150-300 ms | Hailo-8 / Hailo-8L / Hailo-10H |
-| **Whisper-Base** | **~250-500 ms** | Hailo-8 / Hailo-8L / Hailo-10H |
-| Whisper-Tiny.en | ~150-300 ms (English-only) | Hailo-10H only |
+| Variant | Approx latency on Hailo-10H | Accuracy | Hardware support |
+|---------|-----------------------------|----------|------------------|
+| **Whisper-Tiny**  | ~150-300 ms | basic       | Hailo-8 / Hailo-8L / Hailo-10H |
+| **Whisper-Base**  | ~250-500 ms (default) | good        | Hailo-8 / Hailo-8L / Hailo-10H |
+| **Whisper-Small** | ~400-800 ms | best        | Hailo-8 / Hailo-8L / Hailo-10H |
+| **Whisper-Tiny.en** | ~150-300 ms | basic, English-only | Hailo-10H only |
+
+Hailo Model Explorer pages for the three core variants:
+
+- <https://hailo.ai/products/hailo-software/model-explorer/generative-ai/whisper-tiny/>
+- <https://hailo.ai/products/hailo-software/model-explorer/generative-ai/whisper-base/>
+- <https://hailo.ai/products/hailo-software/model-explorer/generative-ai/whisper-small/>
 
 vs. our other backends:
 
@@ -75,6 +82,41 @@ users who prefer a project-local copy) and falls back to
 `/usr/local/hailo/resources/...` automatically. Override either via
 env var (`HAILO_WHISPER_ENCODER_HEF`, `HAILO_WHISPER_DECODER_HEF`,
 `HAILO_WHISPER_NPY_DIR`) for a custom layout.
+
+## Switching variants
+
+Pick a variant for your accuracy / latency tradeoff. The same wrapper
+handles all four — the only knob is `HAILO_WHISPER_MODEL` plus a
+one-time download.
+
+```bash
+# 1. Edit config.py (or .env)
+#    HAILO_WHISPER_MODEL = "small"      # or "tiny" / "base" / "tiny.en"
+
+# 2. Trigger hailo-apps to download the matching HEFs + npy assets.
+cd ~/Documents/code/hailo-apps
+source ~/Documents/code/pi5/.venv/bin/activate
+python -m hailo_apps.python.standalone_apps.speech_recognition.speech_recognition \
+    --arch hailo10h --variant small --duration 6
+# (CLI will fail at the recording step on USB mics that refuse 16 kHz;
+#  the download phase has already completed, which is what we need.)
+
+# 3. Verify the files showed up at the expected paths.
+ls -lh /usr/local/hailo/resources/models/hailo10h/ | grep whisper
+
+# 4. Restart the kiosk.
+cd ~/Documents/code/pi5
+./stop.sh && ./start.sh
+```
+
+Per-variant `.npy` files live alongside in `/usr/local/hailo/resources/npy/`
+(`token_embedding_weight_<variant>.npy`, etc.) and are downloaded by
+the same CLI run. No symlinks needed.
+
+For pure accuracy, **Whisper-Small** is the recommended upgrade once
+you've verified the kiosk works on base. ~2× the inference time vs
+base, but the word error rate drop is significant on accented English
+and longer questions.
 
 ## Restart the kiosk
 

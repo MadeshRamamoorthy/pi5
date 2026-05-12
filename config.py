@@ -226,13 +226,16 @@ CHAT_ASR_BACKEND = "auto"
 
 # Hailo Whisper config. The "auto" path looks here first.
 #
-# Variant: "tiny" / "base" / "tiny.en" (Hailo-10H only). "small" is
-# available on the Hailo-10H community thread but not in the
-# auto-downloader yet. Latency on Hailo-10H:
-#   tiny      ~150-250 ms   weakest accuracy
+# Variant: "tiny" / "base" / "small" / "tiny.en" (10H only). All four
+# are downloaded by the hailo-apps CLI:
+#   python -m hailo_apps.python.standalone_apps.speech_recognition...
+#                                  --arch hailo10h --variant <name>
+# Latency on Hailo-10H:
+#   tiny      ~150-300 ms   basic accuracy
 #   base      ~250-500 ms   recommended balance (default)
-#   tiny.en   ~150-300 ms   better English accuracy than tiny, 10H only
-#   small     ~400-700 ms   best accuracy, needs manual HEF install
+#   small     ~400-800 ms   best accuracy, ~2x base inference time
+#   tiny.en   ~150-300 ms   English-only, 10H only
+# See docs/hailo-whisper.md for switching procedure.
 HAILO_WHISPER_MODEL = "base"
 
 # File resolution. Try the project-local models/ first (symlink
