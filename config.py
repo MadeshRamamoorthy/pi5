@@ -226,10 +226,13 @@ CHAT_ASR_BACKEND = "auto"
 
 # Hailo Whisper config. The "auto" path looks here first.
 #
-# Variant "base" works on Hailo-8 / Hailo-8L / Hailo-10H. "tiny" also
-# works on all three. "tiny.en" (English-only, faster) is Hailo-10H
-# only. Set to "base" by default for accuracy + universal hardware
-# support.
+# Variant: "tiny" / "base" / "tiny.en" (Hailo-10H only). "small" is
+# available on the Hailo-10H community thread but not in the
+# auto-downloader yet. Latency on Hailo-10H:
+#   tiny      ~150-250 ms   weakest accuracy
+#   base      ~250-500 ms   recommended balance (default)
+#   tiny.en   ~150-300 ms   better English accuracy than tiny, 10H only
+#   small     ~400-700 ms   best accuracy, needs manual HEF install
 HAILO_WHISPER_MODEL = "base"
 
 # File resolution. Try the project-local models/ first (symlink

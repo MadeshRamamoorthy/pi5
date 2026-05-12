@@ -204,4 +204,20 @@ class ChatVoiceCapture:
                 if had_voice and silence_run >= config.CHAT_VOICE_SILENCE_SEC:
                     break
 
-        return b"".join(chunks) if had_voice else b""
+        if not had_voice:
+            return b""
+        pcm = b"".join(chunks)
+        # Peak-normalise to ~-3 dBFS. USB mics on the Pi often record
+        # quietly (peak ~-25 to -35 dBFS) and Whisper accuracy drops
+        # sharply on quiet input. This gives the model the strongest
+        # possible signal without clipping. No-op when audio is already
+        # loud or silent.
+        arr = np.frombuffer(pcm, dtype=np.int16)
+        if arr.size:
+            peak = int(np.abs(arr).max())
+            if 50 < peak < 23000:  # not silent, not already loud/clipping
+                gain = 23000 / peak
+                arr = np.clip(arr.astype(np.float32) * gain,
+                              -32767, 32767).astype(np.int16)
+                pcm = arr.tobytes()
+        return pcm

@@ -978,8 +978,12 @@ def main():
         chat_q.put(question)
 
     def listen_start():
-        if chat_voice is not None:
-            chat_voice.start()
+        if chat_voice is None:
+            return
+        # Shut up the kiosk if it's mid-utterance -- we shouldn't talk
+        # over the user. Drops the pending TTS queue too.
+        tts.interrupt()
+        chat_voice.start()
 
     def listen_stop():
         if chat_voice is not None:

@@ -65,6 +65,57 @@ def fetch_profile_text(url: str) -> str:
     return text[:_MAX_PROFILE_CHARS]
 
 
+def summarise_via_web_search(name: str, url: str) -> str:
+    """Bypass scraper-blockers (Akamai etc.) by handing the URL to
+    OpenAI's web_search tool. OpenAI's own crawler isn't blocked by
+    the same fingerprinting rules that 403 `requests`, so this is the
+    reliable path for sites like infosys.com / microsoft.com.
+
+    Returns "" if OpenAI isn't configured, the Responses API isn't
+    available on the installed openai SDK, or the LLM returned no
+    text. Caller falls through to the manual paste-bio path.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return ""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[profile] OpenAI client init failed: {exc!r}")
+        return ""
+
+    prompt = (
+        f"Open this page: {url}\n\n"
+        f"From the page content about {name}, write a single warm "
+        f"welcome sentence (under 22 words) addressing them by name "
+        f"and referencing ONE specific thing -- their current role, "
+        f"a project they lead, or a known interest. Don't start with "
+        f"'Hello' or 'Welcome' if you can avoid it. Sound natural."
+    )
+
+    # Try the Responses API with the web_search built-in tool first.
+    # Falls through to chat.completions on older SDKs / when the tool
+    # isn't enabled on the account.
+    try:
+        resp = client.responses.create(
+            model="gpt-4o-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=prompt,
+        )
+        # The Responses API exposes the answer as .output_text on
+        # recent SDKs.
+        text = (getattr(resp, "output_text", "") or "").strip()
+        if text:
+            return re.sub(r"\s+", " ", text.strip('"').strip())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[profile] responses.create(web_search) unavailable: {exc!r}")
+
+    # No fallback that can fetch URLs reliably -- caller will see ""
+    # and surface the manual-paste hint.
+    return ""
+
+
 def summarise_for_welcome(name: str, profile_text: str) -> str:
     """Ask the LLM for a single warm welcome sentence.
 
@@ -135,20 +186,42 @@ def regenerate(name: str, profile_input: str) -> tuple[str, str]:
     if not text:
         return ("", "no profile URL or text set")
     if text.lower().startswith(("http://", "https://")):
+        # Path A: direct fetch. Works for sites that aren't behind
+        # bot-management.
+        body = ""
+        direct_err = ""
         try:
             body = fetch_profile_text(text)
         except Exception as exc:  # noqa: BLE001
+            direct_err = str(exc)
+        if body:
+            welcome = summarise_for_welcome(name, body)
+            if welcome:
+                return (welcome, "")
+
+        # Path B: hand the URL to OpenAI's web_search tool. Their
+        # crawler isn't blocked by the same Akamai / Cloudflare
+        # fingerprinting that 403s a Python requests call -- so
+        # infosys.com / microsoft.com / similar pages go through.
+        web = summarise_via_web_search(name, text)
+        if web:
+            return (web, "")
+
+        # Both paths gave up -- surface the original direct-fetch
+        # error if there was one, plus the paste hint.
+        if direct_err:
             return ("",
-                    f"fetch failed: {exc}. "
-                    "If the site blocks scrapers (403/404), paste the bio "
+                    f"direct fetch failed ({direct_err}) and OpenAI "
+                    "web_search returned nothing. The site likely has "
+                    "bot protection (Akamai/Cloudflare). Paste the bio "
                     "text directly into the field instead of a URL.")
-        if not body:
-            return ("",
-                    "page returned no readable text (likely a JS-heavy SPA). "
-                    "Paste the bio text directly into the field instead.")
-    else:
-        body = text
-    welcome = summarise_for_welcome(name, body)
+        return ("",
+                "page returned no readable text and OpenAI web_search "
+                "returned nothing. Try pasting the bio text directly "
+                "into the field instead.")
+
+    # Path C: input isn't a URL -- treat as pre-pasted bio text.
+    welcome = summarise_for_welcome(name, text)
     if not welcome:
         return ("", "LLM returned empty (no OPENAI_API_KEY?)")
     return (welcome, "")

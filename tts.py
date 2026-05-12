@@ -46,6 +46,9 @@ def _prepend_silence(wav_path: str, ms: int) -> None:
 
 
 class _Backend:
+    """Backends must support speak(text) and stop(). stop() should
+    interrupt any audio currently playing -- the chat-mic flow taps it
+    when the user starts speaking so the kiosk doesn't talk over them."""
     name = "?"
 
     def speak(self, text: str) -> None:
@@ -62,10 +65,10 @@ class PyttsxBackend(_Backend):
         self.engine = pyttsx3.init()
         self.engine.setProperty("rate", 170)
         self.device = output_device
+        self._proc: subprocess.Popen | None = None
 
     def speak(self, text: str) -> None:
         if not self.device and config.TTS_PREBUFFER_MS <= 0:
-            # Cheapest path: let pyttsx3 drive the system default sink.
             self.engine.say(text)
             self.engine.runAndWait()
             return
@@ -79,12 +82,28 @@ class PyttsxBackend(_Backend):
             if self.device:
                 cmd += ["-D", self.device]
             cmd.append(path)
-            subprocess.run(cmd, check=False)
+            self._proc = subprocess.Popen(cmd)
+            try:
+                self._proc.wait()
+            finally:
+                self._proc = None
         finally:
             try:
                 os.unlink(path)
             except OSError:
                 pass
+
+    def stop(self) -> None:
+        proc = self._proc
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        try:
+            self.engine.stop()
+        except Exception:
+            pass
 
 
 # ---------------- Piper (Python: piper1-gpl) ----------------
@@ -98,6 +117,7 @@ class PiperPyBackend(_Backend):
         self._voice = PiperVoice.load(str(model_path))
         self.model_name = model_path.name
         self.device = output_device
+        self._proc: subprocess.Popen | None = None
 
     def speak(self, text: str) -> None:
         fd, wav = tempfile.mkstemp(suffix=".wav", prefix="tts_")
@@ -115,11 +135,23 @@ class PiperPyBackend(_Backend):
             if self.device:
                 cmd += ["-D", self.device]
             cmd.append(wav)
-            subprocess.run(cmd, check=False)
+            self._proc = subprocess.Popen(cmd)
+            try:
+                self._proc.wait()
+            finally:
+                self._proc = None
         finally:
             try:
                 os.unlink(wav)
             except OSError:
+                pass
+
+    def stop(self) -> None:
+        proc = self._proc
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
                 pass
 
 

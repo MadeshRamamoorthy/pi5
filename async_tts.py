@@ -66,6 +66,18 @@ class AsyncTTS:
         except queue.Empty:
             pass
 
+    def interrupt(self) -> None:
+        """Stop the currently-playing audio AND drop the pending queue.
+
+        Used by the chat-mic flow so the kiosk shuts up the moment the
+        user taps "tap to speak" -- it shouldn't talk over them. Safe
+        to call when nothing is playing."""
+        try:
+            self._backend.stop()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[async-tts] backend.stop failed: {exc!r}")
+        self.flush()
+
     def stop(self) -> None:
         self._q.put(_SHUTDOWN)
         self._thread.join(timeout=2.0)
