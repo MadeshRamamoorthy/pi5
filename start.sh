@@ -206,12 +206,9 @@ case "$x_probe" in
         ;;
 esac
 
-# Warm up the Whisper model in the background so the first real chat
-# voice question doesn't pay the ~3 s model-load cost.
-if grep -q '^CHAT_ASR_BACKEND[[:space:]]*=[[:space:]]*"faster-whisper"' config.py 2>/dev/null; then
-    (python -c "from asr import make_chat_asr; make_chat_asr().warmup()" \
-        >/tmp/echo-whisper-warmup.log 2>&1 &) || true
-fi
+# ASR warm-up now happens IN-PROCESS inside main.py -- a separate
+# python -c invocation here can't share the loaded pipeline with the
+# kiosk backend, so it never actually helped first-chat latency.
 
 # ---- Launch the kiosk ----------------------------------------------------
 # Backend (Flask + camera worker) runs in the background; once it's

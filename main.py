@@ -898,14 +898,32 @@ def main():
     # Chat voice.
     chat_voice: ChatVoiceCapture | None = None
     try:
+        chat_asr = make_chat_asr()
         chat_voice = ChatVoiceCapture(
-            asr=make_chat_asr(),
+            asr=chat_asr,
             out_queue=chat_q,
             wake_listener=listener,
             on_listening_changed=lambda on: state.update(listening=on),
             on_transcribing_changed=lambda on: state.update(transcribing=on),
         )
-        print(f"[chat-voice] using {config.CHAT_ASR_BACKEND}")
+        print(f"[chat-voice] using {getattr(chat_asr, 'label', 'unknown')}")
+        # Warm up the ASR pipeline in a background daemon thread. For
+        # Hailo Whisper that's a ~9 s model load (HEF -> NPU + tokenizer
+        # files) -- doing it here means the user's first chat-voice
+        # tap doesn't eat that cost. The thread runs in this process,
+        # so the loaded pipeline sticks around in self._pipeline for
+        # future transcribe() calls.
+        def _warmup():
+            t0 = time.time()
+            try:
+                chat_asr.warmup()
+                print(f"[asr] warmed up in {(time.time() - t0):.1f}s",
+                      flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[asr] warmup failed (will retry on first use): "
+                       f"{exc!r}", flush=True)
+        threading.Thread(target=_warmup, daemon=True,
+                         name="asr-warmup").start()
     except ChatVoiceCaptureError as exc:
         print(f"[chat-voice] disabled: {exc}")
 
