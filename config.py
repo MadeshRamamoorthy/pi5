@@ -231,16 +231,42 @@ CHAT_ASR_BACKEND = "auto"
 # only. Set to "base" by default for accuracy + universal hardware
 # support.
 HAILO_WHISPER_MODEL = "base"
-# Files. The Pi 5 + AI HAT 2+ setup unpacks them under models/. If
-# you installed hailo-apps from source (it's NOT on PyPI -- clone the
-# repo and `pip install -e '.[speech-rec]'`) the package downloads them
-# into its own data dir on first run. Point these paths there or
-# symlink them into models/. The auto-selector requires all three to
-# exist (HEFs + the decoder tokenization .npy directory) before
-# choosing hailo-whisper. See docs/hailo-whisper.md.
-HAILO_WHISPER_ENCODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-encoder.hef"
-HAILO_WHISPER_DECODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-decoder.hef"
-HAILO_WHISPER_NPY_DIR     = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-assets"
+
+# File resolution. Try the project-local models/ first (symlink
+# convention), then fall back to hailo-apps's install location
+# (/usr/local/hailo/resources/...) -- which is where Hailo's CLI
+# auto-downloader puts files on first run. Whichever exists wins.
+# Override either via env var (HAILO_WHISPER_ENCODER_HEF etc.) for
+# a custom layout.
+def _first_existing(*paths):
+    for p in paths:
+        p = Path(p)
+        if p.exists():
+            return p
+    # Nothing exists yet -- return the local path so the error message
+    # points at the project's preferred install spot.
+    return Path(paths[0])
+
+# Note the embedded "-10s" / "-10s-out-seq-64" suffixes -- Hailo's
+# downloader bakes them into the filenames. Tiny.en is Hailo-10H
+# only and uses the same naming with "tiny.en" prefix.
+HAILO_WHISPER_ENCODER_HEF = _first_existing(
+    MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-encoder.hef",
+    f"/usr/local/hailo/resources/models/hailo10h/"
+    f"{HAILO_WHISPER_MODEL}-whisper-encoder-10s.hef",
+)
+HAILO_WHISPER_DECODER_HEF = _first_existing(
+    MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-decoder.hef",
+    f"/usr/local/hailo/resources/models/hailo10h/"
+    f"{HAILO_WHISPER_MODEL}-whisper-decoder-10s-out-seq-64.hef",
+)
+# The .npy assets live in a shared directory; Hailo's pipeline picks
+# the right ones by filename suffix (e.g. token_embedding_weight_base.npy
+# vs ..._tiny.npy).
+HAILO_WHISPER_NPY_DIR = _first_existing(
+    MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-assets",
+    "/usr/local/hailo/resources/npy",
+)
 # add_embed: hailo-apps sets True for Hailo-8 / Hailo-8L (embedding
 # matmul runs on the host) and False for Hailo-10H (embedding runs on
 # the chip). False is the default for the Pi 5 + AI HAT 2+.

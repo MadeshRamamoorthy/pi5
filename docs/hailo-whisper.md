@@ -52,22 +52,29 @@ git clone https://github.com/hailo-ai/hailo-apps.git
 cd hailo-apps
 pip install -e '.[speech-rec]'
 
-# Smoke-test using Hailo's own CLI before wiring it into the kiosk.
-# It downloads the models on first invocation (~50-150 MB).
+# hailo-apps downloads HEFs into /usr/local/hailo/resources/, which
+# isn't writable by your user by default. Fix that once:
+sudo mkdir -p /usr/local/hailo/resources/models/hailo10h
+sudo chown -R $USER:$USER /usr/local/hailo
+
+# Trigger Hailo's downloader. The CLI smoke-test may fail to record
+# audio (USB mics often refuse 16 kHz natively) -- that's fine, the
+# download runs BEFORE recording so the files are already on disk
+# by the time it errors.
 python -m hailo_apps.python.standalone_apps.speech_recognition.speech_recognition \
     --arch hailo10h --variant base --duration 6
-
-# Find where the downloaded files landed -- hailo-apps stores them
-# inside the package's resource dir. Point config.py / .env at those
-# paths, OR symlink them into pi5/models/ matching the defaults:
-#   models/whisper-base-encoder.hef
-#   models/whisper-base-decoder.hef
-#   models/whisper-base-assets/        (directory containing *.npy)
+# Expected end-state files (note Hailo's "-10s" / "-10s-out-seq-64"
+# suffixes baked into the names):
+#   /usr/local/hailo/resources/models/hailo10h/base-whisper-encoder-10s.hef
+#   /usr/local/hailo/resources/models/hailo10h/base-whisper-decoder-10s-out-seq-64.hef
+#   /usr/local/hailo/resources/npy/*.npy                 (token embeddings)
 ```
 
-`config.py` defaults assume the latter — symlinked into `models/`.
-Pick whichever is easier; override via env vars (`HAILO_WHISPER_*`)
-if you keep them elsewhere.
+**No symlinks needed.** `config.py` checks `pi5/models/` first (for
+users who prefer a project-local copy) and falls back to
+`/usr/local/hailo/resources/...` automatically. Override either via
+env var (`HAILO_WHISPER_ENCODER_HEF`, `HAILO_WHISPER_DECODER_HEF`,
+`HAILO_WHISPER_NPY_DIR`) for a custom layout.
 
 ## Restart the kiosk
 
