@@ -31,6 +31,44 @@
   .tab-panel { display: none; padding-top: 16px; }
   .tab-panel.active { display: block; }
   .tab-panel h2 { margin-top: 0; }
+
+  /* welcome pill on Employees rows */
+  .welcome-pill { display: inline-block; font-size: 10px;
+                  padding: 2px 8px; border-radius: 999px;
+                  text-transform: uppercase; letter-spacing: 0.04em;
+                  margin-right: 8px; vertical-align: middle; }
+  .welcome-pill[data-kind="custom"]   { background: #003049; color: #fff; }
+  .welcome-pill[data-kind="generated"]{ background: #2a9d8f; color: #fff; }
+
+  /* edit modal */
+  .edit-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+                display: flex; align-items: center; justify-content: center;
+                z-index: 100; }
+  .edit-modal[hidden] { display: none; }
+  .edit-card { background: #fff; width: min(540px, 92vw);
+               border-radius: 8px; padding: 18px 22px;
+               box-shadow: 0 10px 40px rgba(0,0,0,0.35); }
+  .edit-card header { display: flex; align-items: center;
+                      justify-content: space-between; margin-bottom: 8px; }
+  .edit-card header h2 { margin: 0; font-size: 18px; }
+  .edit-card .close-x { background: transparent; border: 0;
+                        font-size: 22px; cursor: pointer; line-height: 1; }
+  .edit-card label { display: block; margin-top: 10px; font-size: 12px;
+                     color: #555; text-transform: uppercase;
+                     letter-spacing: 0.04em; }
+  .edit-card input[type=text] { width: 100%; margin-top: 4px;
+                                padding: 8px 10px; border: 1px solid #ccc;
+                                border-radius: 6px; font-size: 14px; }
+  .edit-card .generated-welcome { margin-top: 14px; padding: 10px 12px;
+                                  background: #f5f9fb; border-radius: 6px;
+                                  font-size: 13px; }
+  .edit-card .generated-welcome strong { display: block; font-size: 11px;
+                                         color: #2a9d8f; text-transform: uppercase;
+                                         letter-spacing: 0.04em; }
+  .edit-card .generated-welcome p { margin: 4px 0 0; color: #1a1a1a; }
+  .edit-card .form-actions { display: flex; gap: 8px; justify-content: flex-end;
+                             margin-top: 16px; }
+  .edit-card #edit-emp-id { background: #f0f0f0; color: #555; }
 </style>
 </head>
 <body>
@@ -83,14 +121,55 @@
 <section class="tab-panel" data-panel="employees">
 <h2>Employees (registered faces)</h2>
 <table id="employees-table">
-  <thead><tr><th>ID</th><th>Name</th><th>Samples</th><th>Registered</th><th></th></tr></thead>
+  <thead><tr>
+    <th>ID</th><th>Name</th><th>Samples</th>
+    <th>Profile URL</th><th>Welcome (custom or generated)</th><th></th>
+  </tr></thead>
   <tbody></tbody>
 </table>
 <p class="sub" style="margin-top: 6px;">
   Register from the kiosk (wake → camera flow) or from photos under the
-  "Register from photo" tab.
+  "Register from photo" tab. The welcome message is what the kiosk
+  speaks when this person is recognised — admins can set a custom line
+  directly, or paste a bio URL and click "Regenerate" to have the LLM
+  pull a one-liner from the page.
 </p>
 </section>
+
+<!-- Edit-employee modal (also reachable from the Employees tab) -->
+<div id="employee-edit-modal" class="edit-modal" hidden>
+  <div class="edit-card">
+    <header>
+      <h2>Edit employee</h2>
+      <button type="button" class="close-x" onclick="closeEmpEdit()">&times;</button>
+    </header>
+    <form id="employee-edit-form">
+      <label>Employee ID
+        <input type="text" id="edit-emp-id" readonly>
+      </label>
+      <label>Name
+        <input type="text" id="edit-emp-name" required>
+      </label>
+      <label>Public profile URL
+        <input type="text" id="edit-emp-url"
+               placeholder="https://example.com/about/their-page">
+      </label>
+      <label>Custom welcome (overrides the generated one)
+        <input type="text" id="edit-emp-custom"
+               placeholder="e.g. Hi Shaji! Always great to see EVP of EAS on campus.">
+      </label>
+      <div class="generated-welcome">
+        <strong>Generated welcome (cache)</strong>
+        <p id="edit-emp-cache">—</p>
+      </div>
+      <div class="form-actions">
+        <button type="button" id="edit-emp-regen">Regenerate from URL</button>
+        <button type="submit">Save</button>
+      </div>
+      <p id="edit-emp-status" class="sub"></p>
+    </form>
+  </div>
+</div>
 
 <section class="tab-panel" data-panel="photo-register">
 <h2>Register from photo</h2>
@@ -132,18 +211,30 @@ async function refresh() {
   // Employees.
   try {
     const employees = await fetch("/api/employees").then(r => r.json());
+    window.__lastEmployees = employees;
     const etb = document.querySelector("#employees-table tbody");
     etb.innerHTML = "";
     if (!employees.length) {
-      etb.innerHTML = '<tr><td colspan="5" class="empty">No employees registered yet.</td></tr>';
+      etb.innerHTML = '<tr><td colspan="6" class="empty">No employees registered yet.</td></tr>';
     } else for (const e of employees) {
       const tr = document.createElement("tr");
+      const url = e.profile_url || "";
+      const urlCell = url
+        ? `<a href="${escape(url)}" target="_blank" rel="noopener">link</a>`
+        : `<span class="sub">—</span>`;
+      const welcome = (e.custom_welcome || e.welcome_cache || "").trim();
+      const welcomeTag = e.custom_welcome ? "custom" : (e.welcome_cache ? "generated" : "");
+      const welcomeCell = welcome
+        ? `<span class="welcome-pill" data-kind="${welcomeTag}">${welcomeTag}</span>
+           ${escape(welcome)}`
+        : `<span class="sub">— default greeting —</span>`;
       tr.innerHTML = `<td><code>${escape(e.emp_id)}</code></td>
-        <td>${escape(e.name)}</td>
+        <td>${escape(e.name)}<br><span class="sub">${e.samples} samples</span></td>
         <td>${e.samples}</td>
-        <td>${escape(e.created_at || "")}</td>
+        <td>${urlCell}</td>
+        <td>${welcomeCell}</td>
         <td>
-          <button onclick="renameEmp('${escape(e.emp_id)}', '${escape(e.name)}')">Rename</button>
+          <button onclick="openEmpEdit('${escape(e.emp_id)}')">Edit</button>
           <button onclick="delEmp('${escape(e.emp_id)}')" class="danger">Delete</button>
         </td>`;
       etb.appendChild(tr);
@@ -187,15 +278,72 @@ async function delEmp(emp_id) {
               { method: "DELETE" });
   refresh();
 }
-async function renameEmp(emp_id, current) {
-  const name = prompt(`Rename ${emp_id}:`, current);
-  if (!name || name === current) return;
-  await fetch(`/api/employees/${encodeURIComponent(emp_id)}`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
-  });
-  refresh();
+function openEmpEdit(emp_id) {
+  const emp = (window.__lastEmployees || []).find(e => e.emp_id === emp_id);
+  if (!emp) return;
+  document.getElementById("edit-emp-id").value = emp.emp_id;
+  document.getElementById("edit-emp-name").value = emp.name || "";
+  document.getElementById("edit-emp-url").value = emp.profile_url || "";
+  document.getElementById("edit-emp-custom").value = emp.custom_welcome || "";
+  document.getElementById("edit-emp-cache").textContent =
+      emp.welcome_cache || "— none yet —";
+  document.getElementById("edit-emp-status").textContent = "";
+  document.getElementById("employee-edit-modal").hidden = false;
 }
+function closeEmpEdit() {
+  document.getElementById("employee-edit-modal").hidden = true;
+}
+document.getElementById("employee-edit-form").addEventListener("submit",
+  async (ev) => {
+    ev.preventDefault();
+    const emp_id = document.getElementById("edit-emp-id").value;
+    const body = {
+      name: document.getElementById("edit-emp-name").value.trim(),
+      profile_url: document.getElementById("edit-emp-url").value.trim(),
+      custom_welcome: document.getElementById("edit-emp-custom").value.trim(),
+    };
+    const status = document.getElementById("edit-emp-status");
+    status.textContent = "Saving…";
+    const r = await fetch(`/api/employees/${encodeURIComponent(emp_id)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) {
+      status.textContent = "Saved.";
+      closeEmpEdit();
+      refresh();
+    } else {
+      status.textContent = `Save failed: ${await r.text()}`;
+    }
+});
+document.getElementById("edit-emp-regen").addEventListener("click",
+  async () => {
+    const emp_id = document.getElementById("edit-emp-id").value;
+    const url = document.getElementById("edit-emp-url").value.trim();
+    const status = document.getElementById("edit-emp-status");
+    if (!url) {
+      status.textContent = "Set a profile URL first, then click Save before regenerating.";
+      return;
+    }
+    // Save URL first if it changed -- regen reads it from the DB.
+    status.textContent = "Saving URL…";
+    await fetch(`/api/employees/${encodeURIComponent(emp_id)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile_url: url }),
+    });
+    status.textContent = "Fetching page + asking LLM…";
+    const r = await fetch(
+      `/api/employees/${encodeURIComponent(emp_id)}/welcome`,
+      { method: "POST" },
+    );
+    const data = await r.json();
+    if (r.ok && data.ok) {
+      document.getElementById("edit-emp-cache").textContent = data.welcome;
+      status.textContent = "Regenerated.";
+    } else {
+      status.textContent = `Regenerate failed: ${data.error || r.status}`;
+    }
+});
 document.getElementById("add-project").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = ev.target;

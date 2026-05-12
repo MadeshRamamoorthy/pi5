@@ -66,7 +66,29 @@ class FaceDB:
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """Idempotent column-adds for existing databases. Each ADD COLUMN
+        is wrapped in a try so re-running on a current schema is a no-op."""
+        emp_cols = {r[1] for r in self.conn.execute(
+            "PRAGMA table_info(employees)").fetchall()}
+        for col_def in (
+            "profile_url TEXT",            # admin-set link to a public bio page
+            "custom_welcome TEXT",         # admin-written welcome line (overrides cache)
+            "welcome_cache TEXT",          # LLM-generated welcome from profile_url
+            "profile_updated_at TIMESTAMP",
+        ):
+            col_name = col_def.split()[0]
+            if col_name in emp_cols:
+                continue
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE employees ADD COLUMN {col_def}"
+                )
+            except sqlite3.OperationalError:
+                pass
 
     def close(self):
         self.conn.close()
@@ -120,16 +142,52 @@ class FaceDB:
         return row[0] if row else None
 
     def list_employees(self):
-        """Return [(emp_id, name, sample_count, created_at)] sorted by emp_id."""
+        """Return [(emp_id, name, sample_count, created_at, profile_url,
+        custom_welcome, welcome_cache)] sorted by emp_id."""
         return self.conn.execute(
             """
-            SELECT e.emp_id, e.name, COUNT(f.id), e.created_at
+            SELECT e.emp_id, e.name, COUNT(f.id), e.created_at,
+                   e.profile_url, e.custom_welcome, e.welcome_cache
             FROM employees e
             LEFT JOIN face_embeddings f ON f.emp_id = e.emp_id
             GROUP BY e.emp_id
             ORDER BY e.emp_id
             """
         ).fetchall()
+
+    def get_employee_profile(self, emp_id: str):
+        """Return {emp_id, name, profile_url, custom_welcome, welcome_cache}
+        or None when the employee doesn't exist."""
+        row = self.conn.execute(
+            "SELECT emp_id, name, profile_url, custom_welcome, welcome_cache "
+            "FROM employees WHERE emp_id = ?", (emp_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "emp_id": row[0], "name": row[1],
+            "profile_url": row[2], "custom_welcome": row[3],
+            "welcome_cache": row[4],
+        }
+
+    def set_employee_profile(self, emp_id: str, **fields) -> bool:
+        """Update any of: name, profile_url, custom_welcome, welcome_cache.
+        None values clear the field; absent keys leave it alone."""
+        cols = ("name", "profile_url", "custom_welcome", "welcome_cache")
+        sets, vals = [], []
+        for k in cols:
+            if k in fields:
+                sets.append(f"{k} = ?")
+                vals.append(fields[k])
+        if not sets:
+            return False
+        sets.append("profile_updated_at = CURRENT_TIMESTAMP")
+        vals.append(emp_id)
+        cur = self.conn.execute(
+            f"UPDATE employees SET {', '.join(sets)} WHERE emp_id = ?", vals,
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def delete_employee(self, emp_id: str) -> bool:
         cur = self.conn.execute(

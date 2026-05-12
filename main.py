@@ -142,19 +142,38 @@ class SilentLearner:
 
 class Greeter:
     """Async TTS-backed greeter with per-emp_id cooldown + a toast push
-    to the SPA so the user can see who was greeted."""
+    to the SPA so the user can see who was greeted.
 
-    def __init__(self, tts: AsyncTTS, state: StateBus):
+    Welcome text is chosen by preference:
+      1. employees.custom_welcome  -- admin-written one-liner
+      2. employees.welcome_cache   -- LLM-generated from profile_url
+      3. random recognized_greeting from messages.py
+    """
+
+    def __init__(self, tts: AsyncTTS, state: StateBus, db=None):
         self._tts = tts
         self._state = state
+        self._db = db
         self._last_greeted: dict[str, float] = {}
+
+    def _pick_welcome(self, emp_id: str, name: str) -> str:
+        if self._db is not None:
+            profile = self._db.get_employee_profile(emp_id)
+            if profile:
+                custom = (profile.get("custom_welcome") or "").strip()
+                if custom:
+                    return custom.format(name=name) if "{name}" in custom else custom
+                cached = (profile.get("welcome_cache") or "").strip()
+                if cached:
+                    return cached
+        return messages.random_recognized_greeting(name)
 
     def greet(self, emp_id: str, name: str) -> bool:
         now = time.time()
         if now - self._last_greeted.get(emp_id, 0.0) < config.GREET_COOLDOWN_SEC:
             return False
         self._last_greeted[emp_id] = now
-        msg = messages.random_recognized_greeting(name)
+        msg = self._pick_welcome(emp_id, name)
         print(f"[GREET] {msg}", flush=True)
         # Push the toast + person state from the TTS worker thread so
         # the UI update lands exactly when audio starts playing, not
@@ -852,7 +871,7 @@ def main():
     state.update(chat_backend=chat.status(),
                  chat_remaining=config.CHAT_MAX_QUESTIONS_PER_SESSION)
 
-    greeter = Greeter(tts, state)
+    greeter = Greeter(tts, state, db=db)
     learner = SilentLearner(db)
     frames = FrameStreamer()
 

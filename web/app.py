@@ -261,7 +261,10 @@ def create_app(
             return _request_admin_auth()
         rows = db.list_employees()
         return jsonify([
-            {"emp_id": r[0], "name": r[1], "samples": r[2], "created_at": r[3]}
+            {"emp_id": r[0], "name": r[1], "samples": r[2],
+             "created_at": r[3], "profile_url": r[4] or "",
+             "custom_welcome": r[5] or "",
+             "welcome_cache": r[6] or ""}
             for r in rows
         ])
 
@@ -274,17 +277,45 @@ def create_app(
                 return ("not found", 404)
             return ("", 204)
         body = request.get_json(silent=True) or {}
-        new_name = (body.get("name") or "").strip()
-        if not new_name:
-            return ("name required", 400)
         if not db.employee_exists(emp_id):
             return ("not found", 404)
-        db.conn.execute(
-            "UPDATE employees SET name = ? WHERE emp_id = ?",
-            (new_name, emp_id),
-        )
-        db.conn.commit()
+        # Accept the same payload for name + profile_url + custom_welcome.
+        # Any key the client doesn't send is left alone.
+        update = {}
+        if "name" in body:
+            name = (body.get("name") or "").strip()
+            if not name:
+                return ("name cannot be empty", 400)
+            update["name"] = name
+        if "profile_url" in body:
+            update["profile_url"] = (body.get("profile_url") or "").strip() or None
+        if "custom_welcome" in body:
+            update["custom_welcome"] = (body.get("custom_welcome") or "").strip() or None
+        if not update:
+            return ("nothing to update", 400)
+        db.set_employee_profile(emp_id, **update)
         return ("", 204)
+
+    @app.route("/api/employees/<emp_id>/welcome", methods=["POST"])
+    def api_emp_regen_welcome(emp_id):
+        """Re-fetch the employee's profile_url and regenerate the
+        welcome cache via the LLM. Synchronous -- admin waits for the
+        result and sees the text rendered back."""
+        if not _check_admin_auth():
+            return _request_admin_auth()
+        profile = db.get_employee_profile(emp_id)
+        if not profile:
+            return ("not found", 404)
+        url = (profile.get("profile_url") or "").strip()
+        if not url:
+            return jsonify({"ok": False,
+                             "error": "no profile_url set on this employee"}), 400
+        from profile_fetch import regenerate
+        welcome, err = regenerate(profile["name"], url)
+        if err:
+            return jsonify({"ok": False, "error": err}), 502
+        db.set_employee_profile(emp_id, welcome_cache=welcome)
+        return jsonify({"ok": True, "welcome": welcome})
 
     # -------- metrics ----------------------------------------------------
 
