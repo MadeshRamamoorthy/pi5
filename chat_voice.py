@@ -104,6 +104,7 @@ class ChatVoiceCapture:
                 pass
 
     def _run(self) -> None:
+        t0 = time.time()
         if self._listener is not None:
             self._listener.pause()
             # Tiny grace period so the ALSA device fully closes before
@@ -111,26 +112,46 @@ class ChatVoiceCapture:
             time.sleep(0.15)
         try:
             self._set_listening(True)
+            t_rec_start = time.time()
             pcm = self._record()
+            t_rec_end = time.time()
         finally:
             self._set_listening(False)
             if self._listener is not None:
                 self._listener.resume()
 
+        rec_dur = t_rec_end - t_rec_start
+        audio_kb = len(pcm) / 1024 if pcm else 0
         if not pcm:
+            print(f"[chat-voice] no audio captured "
+                   f"(record window {rec_dur:.2f}s -- VAD only saw silence)",
+                   flush=True)
             return
+        print(f"[chat-voice] recorded {audio_kb:.0f} KB / "
+               f"{rec_dur:.2f}s of audio, transcribing...", flush=True)
         # Transcribing flag stays true for the entire ASR call -- on
         # CPU faster-whisper this is 3-4 s of dead time the user would
         # otherwise see as a frozen UI. With it set the SPA can keep
         # the listen overlay up with a "Processing..." label.
         self._set_transcribing(True)
+        t_asr_start = time.time()
         try:
             text = self._asr.transcribe(pcm, self._native_rate)
         except Exception as exc:  # noqa: BLE001
-            print(f"[chat-voice] transcribe failed: {exc!r}")
+            t_asr_end = time.time()
+            print(f"[chat-voice] transcribe FAILED after "
+                   f"{(t_asr_end - t_asr_start) * 1000:.0f}ms: {exc!r}",
+                   flush=True)
             return
         finally:
             self._set_transcribing(False)
+        t_asr_end = time.time()
+        asr_ms = (t_asr_end - t_asr_start) * 1000
+        total_ms = (t_asr_end - t0) * 1000
+        backend = getattr(self._asr, "label", "?")
+        print(f"[chat-voice] {backend} transcribed in {asr_ms:.0f}ms "
+               f"(total since mic-on: {total_ms:.0f}ms): {text!r}",
+               flush=True)
         if text:
             self._out_q.put(text)
 

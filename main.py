@@ -155,11 +155,15 @@ class Greeter:
             return False
         self._last_greeted[emp_id] = now
         msg = messages.random_recognized_greeting(name)
-        print(f"[GREET] {msg}")
+        print(f"[GREET] {msg}", flush=True)
         # Push the toast + person state from the TTS worker thread so
         # the UI update lands exactly when audio starts playing, not
         # N queued utterances earlier.
+        t_queued = time.time()
         def on_start():
+            wait_ms = (time.time() - t_queued) * 1000
+            print(f"[tts] greet on-air after {wait_ms:.0f}ms in queue",
+                  flush=True)
             self._state.update(
                 person={"emp_id": emp_id, "name": name},
                 toast={"text": msg, "since": time.time()},
@@ -168,8 +172,12 @@ class Greeter:
         return True
 
     def say(self, text: str) -> None:
-        print(f"[TTS] {text}")
+        snip = (text[:60] + "...") if len(text) > 63 else text
+        print(f"[tts] queued: {snip!r}", flush=True)
+        t_queued = time.time()
         def on_start():
+            wait_ms = (time.time() - t_queued) * 1000
+            print(f"[tts] on-air after {wait_ms:.0f}ms in queue", flush=True)
             self._state.update(toast={"text": text, "since": time.time()})
         self._tts.speak(text, on_start=on_start)
 
@@ -518,6 +526,12 @@ class CameraWorker(threading.Thread):
                                   f"chat service right now ({exc}).")
                     except Exception as exc:  # noqa: BLE001
                         answer = f"Hmm, something went sideways: {exc}"
+                    chat_ms = (time.time() -
+                               getattr(self, "_chat_submitted_at", time.time())
+                               ) * 1000
+                    snip = (answer[:60] + "...") if len(answer) > 63 else answer
+                    print(f"[chat] reply in {chat_ms:.0f}ms: {snip!r}",
+                          flush=True)
                     self.state.update(chat_pending=False)
                     self._append_chat("assistant", answer)
                     self.greeter.say(answer)
@@ -749,7 +763,10 @@ class CameraWorker(threading.Thread):
             self.greeter.say(answer)
             return
         self.state.update(chat_pending=True)
+        snip = (question[:60] + "...") if len(question) > 63 else question
+        print(f"[chat] submit ({self.chat.status()}): {snip!r}", flush=True)
         self._last_chat_at = time.time()
+        self._chat_submitted_at = time.time()
         self._chat_future = self.chat.submit(emp_id, question)
 
     def _append_chat(self, role: str, text: str):
