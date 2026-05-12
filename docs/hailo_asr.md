@@ -4,16 +4,16 @@
 decoder HEFs and a Python pipeline that runs the whole STT path on
 the NPU.
 
-| Variant | Approx latency on Hailo-10H | Notes |
-|---------|-----------------------------|-------|
-| Whisper-Tiny  | ~150-300 ms | Fastest, lowest accuracy |
-| **Whisper-Base** | **~250-500 ms** | Recommended default |
-| Whisper-Small | ~400-800 ms | Best accuracy, more memory |
+| Variant | Approx latency on Hailo-10H | Hardware support |
+|---------|-----------------------------|------------------|
+| Whisper-Tiny  | ~150-300 ms | Hailo-8 / Hailo-8L / Hailo-10H |
+| **Whisper-Base** | **~250-500 ms** | Hailo-8 / Hailo-8L / Hailo-10H |
+| Whisper-Tiny.en | ~150-300 ms (English-only) | Hailo-10H only |
 
 vs. our other backends:
 
 | Backend | Latency on a 5 s utterance | Cost |
-|---------|---------------------------|------|
+|---------|----------------------------|------|
 | **Hailo Whisper-Base** | **~250-500 ms** | $0 |
 | OpenAI Whisper API     | ~1-2 s        | ~$0.0002/min |
 | faster-whisper tiny.en (Pi 5 CPU) | ~3-4 s | $0 |
@@ -23,107 +23,135 @@ vs. our other backends:
 `config.CHAT_ASR_BACKEND = "auto"` (the default) goes through this
 precedence:
 
-1. **Hailo Whisper** — chosen when both encoder + decoder HEFs are
-   present on disk. The actual `hailo-apps` import is deferred to
-   first use, so a missing package only fails on the first chat
-   question, not at boot.
-2. **OpenAI Whisper** — chosen when `OPENAI_API_KEY` is set in `.env`
-   or the environment.
+1. **Hailo Whisper** — chosen when the encoder HEF, decoder HEF, AND
+   the `npy_dir` (decoder tokenization assets) are all on disk.
+   `hailo-apps` import is deferred to first use so a missing package
+   only fails on the first chat question, not at boot.
+2. **OpenAI Whisper** — chosen when `OPENAI_API_KEY` is set.
 3. **faster-whisper** — pure CPU fallback for fully offline boxes.
 
-Force a specific backend by setting `CHAT_ASR_BACKEND = "hailo"`
-(or `"openai"`, `"faster-whisper"`, `"vosk"`).
+Force a specific backend: `CHAT_ASR_BACKEND = "hailo"` (or
+`"openai"` / `"faster-whisper"` / `"vosk"`).
 
-## Setup on the Pi
+## Setup on the Pi 5 + AI HAT 2+ (Hailo-10H)
 
 ```bash
-# 1. Install hailo-apps (provides the Whisper pipeline class).
-pip install hailo-apps
-# Or clone for the latest tip:
-#   git clone https://github.com/hailo-ai/hailo-apps
-#   pip install -e ./hailo-apps
+# Prereqs from Hailo's README:
+sudo apt install -y ffmpeg libportaudio2
 
-# 2. Download the Whisper-Base HEFs into models/.
-#    Hailo's Model Zoo URL changes occasionally; see
-#    https://github.com/hailo-ai/hailo-apps for the current path
-#    (look in the speech_recognition app's download script).
-cd models/
-wget <whisper-base-encoder.hef URL>
-wget <whisper-base-decoder.hef URL>
-# Rename to match what config.py expects, OR override the paths
-# via HAILO_WHISPER_ENCODER_HEF / HAILO_WHISPER_DECODER_HEF.
+# Install hailo-apps with the speech-recognition extra. This pulls
+# in transformers / numpy / soundfile dependencies AND lets the
+# bundled download script fetch the HEFs + .npy assets on first run.
+pip install 'hailo-apps[speech-rec]'
 
-# 3. Verify selection.
-./start.sh
-# In the log, look for:
-#   [asr] auto-selected backend: hailo-whisper
-#   [asr] loading Hailo Whisper base (encoder=..., decoder=...)
+# Smoke-test using Hailo's own CLI before wiring it into the kiosk.
+# It downloads the models on first invocation (~50-150 MB).
+python -m hailo_apps.python.standalone_apps.speech_recognition.speech_recognition \
+    --arch hailo10h --variant base --duration 6
+
+# Find where the downloaded files landed -- hailo-apps stores them
+# inside the package's resource dir. Point config.py / .env at those
+# paths, OR symlink them into pi5/models/ matching the defaults:
+#   models/whisper-base-encoder.hef
+#   models/whisper-base-decoder.hef
+#   models/whisper-base-assets/        (directory containing *.npy)
+```
+
+`config.py` defaults assume the latter — symlinked into `models/`.
+Pick whichever is easier; override via env vars (`HAILO_WHISPER_*`)
+if you keep them elsewhere.
+
+## Restart the kiosk
+
+```bash
+./stop.sh && ./start.sh
+```
+
+Verify in `/tmp/echo-backend.log`:
+```
+[asr] auto-selected backend: hailo-whisper
+[chat-voice] using hailo-whisper
+... first chat question ...
+[asr] loading Hailo Whisper base (encoder=models/whisper-base-encoder.hef,
+        decoder=models/whisper-base-decoder.hef,
+        npy_dir=models/whisper-base-assets, add_embed=False)
+```
+
+## How the wrapper drives the pipeline
+
+`asr.py:HailoWhisperASR` mirrors the reference loop from
+`hailo-apps/python/standalone_apps/speech_recognition`:
+
+```python
+pipeline = WhisperPipeline(encoder_path, decoder_path,
+                           variant="base", npy_dir=..., add_embed=False)
+mels = preprocess_audio(audio_float32, chunk_length=pipeline.get_chunk_length())
+for mel in mels:
+    pipeline.send_data(mel)
+    time.sleep(0.1)
+    text = pipeline.get_transcription()
+    results.append(text)
+return clean_transcription(" ".join(results))
+```
+
+A `threading.Lock` serialises `transcribe()` calls because the
+pipeline keeps internal state across `send_data` / `get_transcription`
+pairs.
+
+## `add_embed` (Hailo-8/8L vs Hailo-10H)
+
+Per `hailo-apps/speech_recognition.py`, `add_embed=True` for the
+Hailo-8 and Hailo-8L (host CPU runs the token-embedding matmul) and
+`add_embed=False` for Hailo-10H (embedding runs on the chip). The
+default in `config.py` is `False` — Pi 5 + AI HAT 2+. Flip it for
+older hardware:
+
+```python
+# config.py
+HAILO_WHISPER_ADD_EMBED = True
 ```
 
 ## Chip-contention reality check
 
 The Hailo-10H currently hosts:
 
-- SCRFD (face detect) + ArcFace (embed) — runs on every camera frame
-  while ACTIVE
-- Hailo-Whisper encoder + decoder — runs during chat exchanges
-- Optionally Hailo-Ollama (`qwen3:1.7b`) — only loaded if
-  `PRELOAD_OLLAMA=1` is set or `OPENAI_API_KEY` is unset
+- SCRFD (face detect) + ArcFace (embed) — every camera frame while
+  ACTIVE
+- Hailo-Whisper encoder + decoder — during chat exchanges
+- Optionally Hailo-Ollama (`qwen3:1.7b`) — only when
+  `PRELOAD_OLLAMA=1` or `OPENAI_API_KEY` is unset
 
 In the common case (OpenAI for chat, Hailo for face + Whisper):
 
 - Face recognition and Whisper rarely overlap. The camera worker
-  *skips* recognition during a chat exchange (the `chat_busy` check in
-  `main.py`), so the NPU is free for Whisper while the user is
-  talking. Whisper completes in <1 s and face recognition resumes
+  **skips** recognition during a chat exchange (the `chat_busy`
+  check in `main.py`), so the NPU is free for Whisper while the user
+  is talking. Whisper completes in <1 s and face recognition resumes
   immediately.
 
 If you also load Hailo-Ollama, the NPU schedules all three workloads
-serially — workable but adds latency. The kiosk doesn't pre-load
-Ollama when `OPENAI_API_KEY` is set, so usually you don't pay this
-cost.
+serially. The kiosk doesn't pre-load Ollama when `OPENAI_API_KEY`
+is set, so usually you don't pay this cost.
 
-## Verifying the latency
+## Troubleshooting
 
-```bash
-tail -F /tmp/echo-backend.log | grep -E 'asr|chat-voice'
-```
-
-Expected sequence on a chat-voice tap:
-
-```
-[chat-voice] using hailo-whisper
-... user speaks ...
-[asr] loading Hailo Whisper base (encoder=..., decoder=...)
-... ~500 ms ...
-[chat-voice] transcribed: "what's the weather"
-```
-
-If you see `[asr] loading...` *every* utterance, that means the
-pipeline isn't being cached -- it should only print on the first
-chat after each boot.
-
-## What to do if it doesn't work
-
-- Missing HEFs: the wrapper prints the expected file paths and a
-  download hint. Drop the files at those paths and restart.
-- `hailo-apps` import fails: try `pip install hailo-apps` or clone
-  the repo and `pip install -e .`. The wrapper tries three known
-  module paths (`hailo_apps.python.standalone_apps.speech_recognition.
-  whisper_pipeline`, `hailo_apps.speech_recognition.pipeline`,
-  `hailo_whisper.pipeline`) — if Hailo reorganises again, the last
-  ImportError prints clearly in the log and we patch the candidates
-  list in `asr.py`.
-- HailoRT errors at decode: usually means another model is holding
-  the NPU. Check `pgrep -fl hailo-ollama` and stop it if you don't
-  need offline chat.
+- **Missing HEFs** — the wrapper prints the expected paths and the
+  install command. Either move/symlink hailo-apps's downloads, or
+  set `HAILO_WHISPER_ENCODER_HEF` / `HAILO_WHISPER_DECODER_HEF` /
+  `HAILO_WHISPER_NPY_DIR` to point at them.
+- **`ImportError: hailo_apps...whisper_pipeline`** — install the
+  speech-rec extra: `pip install 'hailo-apps[speech-rec]'`.
+- **HailoRT busy errors at decode** — another model holds the
+  NPU. Check `pgrep -fl hailo-ollama` and stop it if you don't need
+  offline chat.
+- **`add_embed` mismatch** — symptom is gibberish output. Try
+  flipping `HAILO_WHISPER_ADD_EMBED` for your hardware.
 
 ## Links
 
 - [hailo-ai/hailo-apps](https://github.com/hailo-ai/hailo-apps) —
-  primary repo, has the `speech_recognition` standalone app.
+  primary repo, `python/standalone_apps/speech_recognition/`.
+- [Pi 5 + Whisper-Small HEF community thread](https://community.hailo.ai/t/pi-5-whisper-small-hef/18946) —
+  troubleshooting + benchmarks from real Pi 5 users.
 - [hailocs/hailo-whisper](https://github.com/hailocs/hailo-whisper) —
-  original conversion tooling.
-- [Pi 5 + Whisper-Small HEF community
-  thread](https://community.hailo.ai/t/pi-5-whisper-small-hef/18946) —
-  troubleshooting and benchmarks from real Pi 5 users.
+  original conversion tooling (kept for compatibility).

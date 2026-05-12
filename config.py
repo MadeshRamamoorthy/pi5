@@ -225,9 +225,25 @@ CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 CHAT_ASR_BACKEND = "auto"
 
 # Hailo Whisper config. The "auto" path looks here first.
-HAILO_WHISPER_MODEL = "base"        # "tiny" | "base" | "small"
+#
+# Variant "base" works on Hailo-8 / Hailo-8L / Hailo-10H. "tiny" also
+# works on all three. "tiny.en" (English-only, faster) is Hailo-10H
+# only. Set to "base" by default for accuracy + universal hardware
+# support.
+HAILO_WHISPER_MODEL = "base"
+# Files. The Pi 5 + AI HAT 2+ setup unpacks them under models/. If
+# you installed hailo-apps with `pip install 'hailo-apps[speech-rec]'`
+# the package downloads them into its own data dir on first run --
+# point these paths there. The auto-selector requires all three to
+# exist (HEFs + the decoder tokenization .npy directory) before
+# choosing hailo-whisper.
 HAILO_WHISPER_ENCODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-encoder.hef"
 HAILO_WHISPER_DECODER_HEF = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-decoder.hef"
+HAILO_WHISPER_NPY_DIR     = MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-assets"
+# add_embed: hailo-apps sets True for Hailo-8 / Hailo-8L (embedding
+# matmul runs on the host) and False for Hailo-10H (embedding runs on
+# the chip). False is the default for the Pi 5 + AI HAT 2+.
+HAILO_WHISPER_ADD_EMBED = False
 WHISPER_MODEL = "tiny.en"           # "tiny.en" | "base.en" | "small.en"
 WHISPER_DEVICE = "cpu"              # Pi 5 has no GPU; keep "cpu".
 WHISPER_COMPUTE_TYPE = "int8"       # 8-bit quantisation for memory.

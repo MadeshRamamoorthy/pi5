@@ -17,6 +17,8 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import threading
+import time
 import wave
 from pathlib import Path
 
@@ -125,100 +127,139 @@ class OpenAIWhisperASR(ChatASR):
 
 
 class HailoWhisperASR(ChatASR):
-    """Run Whisper on the Hailo-10H / Hailo-8L NPU.
+    """Run Whisper on the Hailo-10H / Hailo-8 / Hailo-8L NPU.
 
     Wraps Hailo's official speech_recognition pipeline from
-    https://github.com/hailo-ai/hailo-apps. Inference is ~200-700 ms
-    per short utterance on Hailo-10H (10-30x faster than CPU
-    faster-whisper) and costs nothing per request.
+    https://github.com/hailo-ai/hailo-apps, matching the usage pattern
+    in their standalone_apps/speech_recognition reference app:
 
-    The actual import + initialisation is deferred to first use so
-    the rest of the kiosk still boots cleanly when the hailo-apps
-    package is missing -- in that case the asr factory's auto-select
-    just falls through to the next backend.
+        pipeline = WhisperPipeline(encoder_path, decoder_path,
+                                   variant=..., npy_dir=..., add_embed=...)
+        mels = preprocess_audio(audio, chunk_length=pipeline.get_chunk_length())
+        for mel in mels:
+            pipeline.send_data(mel)
+            time.sleep(0.1)
+            text = pipeline.get_transcription()
+            results.append(text)
+        return clean_transcription(" ".join(results))
+
+    Inference is ~200-700 ms per short utterance on Hailo-10H
+    (10-30x faster than CPU faster-whisper) and costs nothing per
+    request. Imports are deferred to first use so the rest of the
+    kiosk still boots cleanly when the hailo-apps package is missing
+    -- the asr factory's auto-select then falls through to the next
+    backend.
+
+    add_embed: hailo-apps sets True for Hailo-8 / Hailo-8L (embedding
+    runs on the host CPU) and False for Hailo-10H (embedding runs on
+    the chip). Default False matches the Pi 5 + AI HAT 2+ setup; flip
+    it via config.HAILO_WHISPER_ADD_EMBED for older hardware.
     """
 
     label = "hailo-whisper"
 
-    def __init__(self, model_size: str | None = None,
-                 encoder_hef: str | None = None,
-                 decoder_hef: str | None = None):
-        self._model_size = (model_size or
-                            getattr(config, "HAILO_WHISPER_MODEL", "base"))
-        self._encoder_hef = encoder_hef or self._guess_hef("encoder")
-        self._decoder_hef = decoder_hef or self._guess_hef("decoder")
+    def __init__(self, model_variant: str | None = None,
+                 encoder_path: str | None = None,
+                 decoder_path: str | None = None,
+                 npy_dir: str | None = None,
+                 add_embed: bool | None = None):
+        self._variant = (model_variant or
+                         getattr(config, "HAILO_WHISPER_MODEL", "base"))
+        self._encoder_path = str(encoder_path or
+                                 getattr(config, "HAILO_WHISPER_ENCODER_HEF",
+                                          self._guess_hef("encoder")))
+        self._decoder_path = str(decoder_path or
+                                 getattr(config, "HAILO_WHISPER_DECODER_HEF",
+                                          self._guess_hef("decoder")))
+        self._npy_dir = str(npy_dir or
+                            getattr(config, "HAILO_WHISPER_NPY_DIR",
+                                    self._guess_npy_dir()))
+        self._add_embed = (add_embed if add_embed is not None
+                           else bool(getattr(config,
+                                              "HAILO_WHISPER_ADD_EMBED",
+                                              False)))
         self._pipeline = None
+        self._preprocess_audio = None
+        self._clean_transcription = None
+        self._chunk_length = None
+        # Serialise transcribe() calls -- the pipeline keeps internal
+        # state across send_data/get_transcription pairs and can't be
+        # shared across overlapping requests.
+        self._lock = threading.Lock()
 
     def _guess_hef(self, role: str) -> str:
-        """Pick a sensible default path for the encoder / decoder HEF.
-        Override per-instance, or via config.HAILO_WHISPER_*_HEF."""
-        custom = getattr(config, f"HAILO_WHISPER_{role.upper()}_HEF", None)
-        if custom:
-            return str(custom)
         return str(
             getattr(config, "MODELS_DIR", Path("models"))
-            / f"whisper-{self._model_size}-{role}.hef"
+            / f"whisper-{self._variant}-{role}.hef"
+        )
+
+    def _guess_npy_dir(self) -> str:
+        return str(
+            getattr(config, "MODELS_DIR", Path("models"))
+            / f"whisper-{self._variant}-assets"
         )
 
     def _ensure_pipeline(self) -> None:
         if self._pipeline is not None:
             return
-        # Verify the HEFs exist before pulling in hailo-apps, so the
-        # error message is friendly and points at the missing file
-        # rather than a deep ImportError.
-        for path in (self._encoder_hef, self._decoder_hef):
+        # File-existence checks up front so the error message points
+        # at exactly what's missing, not at a deep ImportError or a
+        # HailoRT crash later.
+        for path in (self._encoder_path, self._decoder_path):
             if not Path(path).is_file():
                 raise RuntimeError(
                     f"Hailo Whisper HEF not found: {path}\n"
-                    "Download it from Hailo's Model Zoo:\n"
-                    "  https://github.com/hailo-ai/hailo-apps\n"
-                    f"and place it at {path}, or set HAILO_WHISPER_*_HEF "
-                    "in config.py / .env to point elsewhere."
+                    "Install hailo-apps with the speech-rec extra to "
+                    "auto-download the models on first run:\n"
+                    "  pip install 'hailo-apps[speech-rec]'\n"
+                    "Or override HAILO_WHISPER_ENCODER_HEF / "
+                    "HAILO_WHISPER_DECODER_HEF in config.py."
                 )
-
-        # Try the canonical entry points in order. hailo-apps has
-        # reorganised once or twice in 2025; this gives us a best-effort
-        # without locking to a single layout.
-        candidates = (
-            ("hailo_apps.python.standalone_apps.speech_recognition."
-             "whisper_pipeline", "WhisperPipeline"),
-            ("hailo_apps.speech_recognition.pipeline", "WhisperPipeline"),
-            ("hailo_whisper.pipeline", "WhisperPipeline"),
-        )
-        WhisperPipeline = None
-        last_err = None
-        for module_path, cls_name in candidates:
-            try:
-                module = __import__(module_path, fromlist=[cls_name])
-                WhisperPipeline = getattr(module, cls_name)
-                break
-            except (ImportError, AttributeError) as exc:
-                last_err = exc
-        if WhisperPipeline is None:
+        if not Path(self._npy_dir).is_dir():
             raise RuntimeError(
-                "Hailo Whisper backend requires the hailo-apps package. "
-                "Install it with:\n"
-                "  pip install hailo-apps\n"
-                "or clone https://github.com/hailo-ai/hailo-apps and "
-                "`pip install -e .`. Last import error: " + repr(last_err)
+                f"Hailo Whisper assets directory not found: {self._npy_dir}\n"
+                "This holds the decoder tokenization .npy files that "
+                "hailo-apps ships alongside the HEFs. Install with "
+                "`pip install 'hailo-apps[speech-rec]'` (which downloads "
+                "the assets on first run) or set HAILO_WHISPER_NPY_DIR "
+                "in config.py."
             )
 
-        print(f"[asr] loading Hailo Whisper {self._model_size} "
-              f"(encoder={self._encoder_hef}, decoder={self._decoder_hef})")
-        # The pipeline ctor signature is best-effort -- hailo-apps
-        # currently uses (encoder_hef, decoder_hef, ...). If their API
-        # has shifted, the TypeError will be obvious in the log and we
-        # can patch this call.
+        try:
+            from hailo_apps.python.standalone_apps.speech_recognition.whisper_pipeline import WhisperPipeline
+            from hailo_apps.python.standalone_apps.speech_recognition.audio_utils import preprocess_audio
+            from hailo_apps.python.standalone_apps.speech_recognition.postprocessing import clean_transcription
+        except ImportError as exc:
+            raise RuntimeError(
+                "Hailo Whisper backend requires hailo-apps with the "
+                "speech-rec extra:\n"
+                "  pip install 'hailo-apps[speech-rec]'\n"
+                "or clone https://github.com/hailo-ai/hailo-apps and "
+                "`pip install -e \".[speech-rec]\"`.\n"
+                f"Import error: {exc!r}"
+            ) from exc
+
+        print(f"[asr] loading Hailo Whisper {self._variant} "
+              f"(encoder={self._encoder_path}, decoder={self._decoder_path}, "
+              f"npy_dir={self._npy_dir}, add_embed={self._add_embed})")
         self._pipeline = WhisperPipeline(
-            encoder_hef=self._encoder_hef,
-            decoder_hef=self._decoder_hef,
+            self._encoder_path,
+            self._decoder_path,
+            variant=self._variant,
+            npy_dir=self._npy_dir,
+            add_embed=self._add_embed,
         )
+        self._preprocess_audio = preprocess_audio
+        self._clean_transcription = clean_transcription
+        self._chunk_length = self._pipeline.get_chunk_length()
 
     def warmup(self) -> None:
         self._ensure_pipeline()
 
     def transcribe(self, pcm: bytes, samplerate: int) -> str:
         self._ensure_pipeline()
+        # int16 PCM at any sample rate -> float32 mono at 16 kHz, the
+        # rate the Whisper preprocessor expects.
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         if samplerate != 16000:
             from audio_utils import resample_int16
@@ -226,12 +267,32 @@ class HailoWhisperASR(ChatASR):
                 (audio * 32768).astype(np.int16), samplerate, 16000,
             )
             audio = resampled.astype(np.float32) / 32768.0
-        # hailo-apps Whisper pipeline returns either a string or a dict
-        # depending on version; handle both.
-        result = self._pipeline.transcribe(audio)
-        if isinstance(result, dict):
-            return (result.get("text") or "").strip()
-        return str(result).strip()
+
+        with self._lock:
+            mels = self._preprocess_audio(audio, chunk_length=self._chunk_length)
+            results = []
+            for mel in mels:
+                self._pipeline.send_data(mel)
+                # Tiny gap before pulling the result -- mirrors Hailo's
+                # own reference loop. get_transcription() blocks until
+                # the worker thread is ready anyway, but the sleep lets
+                # short utterances pipeline cleanly.
+                time.sleep(0.1)
+                text = self._pipeline.get_transcription()
+                if text:
+                    results.append(text)
+
+        if not results:
+            return ""
+        return self._clean_transcription(" ".join(results)).strip()
+
+    def stop(self) -> None:
+        if self._pipeline is not None:
+            try:
+                self._pipeline.stop()
+            except Exception:
+                pass
+            self._pipeline = None
 
 
 # ---------------- Vosk fallback (legacy, low quality) ----------------
@@ -287,16 +348,19 @@ def make_chat_asr() -> ChatASR:
 
 
 def _auto_pick_backend() -> str:
-    # Hailo Whisper: only choose it when the HEFs are actually on disk.
-    # The hailo-apps package import is deferred to first transcribe(),
-    # so we only need to validate file paths here.
-    enc = getattr(config, "HAILO_WHISPER_ENCODER_HEF", None)
-    dec = getattr(config, "HAILO_WHISPER_DECODER_HEF", None)
+    # Hailo Whisper: only choose it when the HEFs AND the decoder
+    # tokenization assets directory are all on disk. The hailo-apps
+    # package import is deferred to first transcribe(), so file checks
+    # are sufficient here.
     size = getattr(config, "HAILO_WHISPER_MODEL", "base")
     models_dir = getattr(config, "MODELS_DIR", Path("models"))
-    enc_path = Path(enc) if enc else (models_dir / f"whisper-{size}-encoder.hef")
-    dec_path = Path(dec) if dec else (models_dir / f"whisper-{size}-decoder.hef")
-    if enc_path.is_file() and dec_path.is_file():
+    enc = getattr(config, "HAILO_WHISPER_ENCODER_HEF",
+                  models_dir / f"whisper-{size}-encoder.hef")
+    dec = getattr(config, "HAILO_WHISPER_DECODER_HEF",
+                  models_dir / f"whisper-{size}-decoder.hef")
+    npy = getattr(config, "HAILO_WHISPER_NPY_DIR",
+                  models_dir / f"whisper-{size}-assets")
+    if Path(enc).is_file() and Path(dec).is_file() and Path(npy).is_dir():
         return "hailo-whisper"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
