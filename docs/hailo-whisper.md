@@ -4,18 +4,33 @@
 decoder HEFs and a Python pipeline that runs the whole STT path on
 the NPU.
 
+Variants the `hailo-apps` CLI auto-downloads today:
+
 | Variant | Approx latency on Hailo-10H | Accuracy | Hardware support |
 |---------|-----------------------------|----------|------------------|
-| **Whisper-Tiny**  | ~150-300 ms | basic       | Hailo-8 / Hailo-8L / Hailo-10H |
-| **Whisper-Base**  | ~250-500 ms (default) | good        | Hailo-8 / Hailo-8L / Hailo-10H |
-| **Whisper-Small** | ~400-800 ms | best        | Hailo-8 / Hailo-8L / Hailo-10H |
-| **Whisper-Tiny.en** | ~150-300 ms | basic, English-only | Hailo-10H only |
+| **Whisper-Tiny**  | ~150-300 ms | basic | Hailo-8 / Hailo-8L / Hailo-10H |
+| **Whisper-Base**  | ~250-500 ms (default) | good | Hailo-8 / Hailo-8L / Hailo-10H |
+| **Whisper-Tiny.en** | ~150-300 ms | better English than tiny | Hailo-10H only |
 
-Hailo Model Explorer pages for the three core variants:
+**Whisper-Small** has a Model Explorer page on hailo.ai but is **not
+in the hailo-apps CLI** (`--variant small` errors out with
+`invalid choice: 'small'`). If you need it, watch the community
+thread linked at the bottom -- people have built it manually with the
+Dataflow Compiler and shared HEFs. The wrapper in `asr.py` will
+happily load it once the encoder/decoder HEFs and matching `.npy`
+files are on disk; just set `HAILO_WHISPER_MODEL=small` and point
+the env vars at the right files.
+
+Hailo Model Explorer pages:
 
 - <https://hailo.ai/products/hailo-software/model-explorer/generative-ai/whisper-tiny/>
 - <https://hailo.ai/products/hailo-software/model-explorer/generative-ai/whisper-base/>
-- <https://hailo.ai/products/hailo-software/model-explorer/generative-ai/whisper-small/>
+- <https://hailo.ai/products/hailo-software/model-explorer/generative-ai/whisper-small/> (no HEF in CLI yet)
+
+For best out-of-the-box accuracy on the Pi 5 + AI HAT 2+, use
+**`tiny.en`** (Hailo-10H only). It's the English-specialised tiny
+model, faster than base and noticeably more accurate on English
+speech than the multilingual tiny.
 
 vs. our other backends:
 
@@ -85,38 +100,47 @@ env var (`HAILO_WHISPER_ENCODER_HEF`, `HAILO_WHISPER_DECODER_HEF`,
 
 ## Switching variants
 
-Pick a variant for your accuracy / latency tradeoff. The same wrapper
-handles all four — the only knob is `HAILO_WHISPER_MODEL` plus a
-one-time download.
-
 ```bash
 # 1. Edit config.py (or .env)
-#    HAILO_WHISPER_MODEL = "small"      # or "tiny" / "base" / "tiny.en"
+#    HAILO_WHISPER_MODEL = "tiny.en"   # or "tiny" / "base"
 
 # 2. Trigger hailo-apps to download the matching HEFs + npy assets.
 cd ~/Documents/code/hailo-apps
 source ~/Documents/code/pi5/.venv/bin/activate
 python -m hailo_apps.python.standalone_apps.speech_recognition.speech_recognition \
-    --arch hailo10h --variant small --duration 6
+    --arch hailo10h --variant tiny.en --duration 6
 # (CLI will fail at the recording step on USB mics that refuse 16 kHz;
 #  the download phase has already completed, which is what we need.)
 
-# 3. Verify the files showed up at the expected paths.
+# 3. Verify the files arrived
 ls -lh /usr/local/hailo/resources/models/hailo10h/ | grep whisper
 
-# 4. Restart the kiosk.
+# 4. Restart the kiosk
 cd ~/Documents/code/pi5
 ./stop.sh && ./start.sh
 ```
 
-Per-variant `.npy` files live alongside in `/usr/local/hailo/resources/npy/`
+Per-variant `.npy` files live alongside in
+`/usr/local/hailo/resources/npy/`
 (`token_embedding_weight_<variant>.npy`, etc.) and are downloaded by
 the same CLI run. No symlinks needed.
 
-For pure accuracy, **Whisper-Small** is the recommended upgrade once
-you've verified the kiosk works on base. ~2× the inference time vs
-base, but the word error rate drop is significant on accented English
-and longer questions.
+### Trying Whisper-Small (not in hailo-apps CLI)
+
+If you have HEFs from elsewhere (e.g. someone in the community
+thread compiled them), the kiosk supports the variant -- it just
+doesn't know how to download them.
+
+```bash
+# Put the files anywhere readable, then point env vars at them:
+# .env
+HAILO_WHISPER_MODEL=small
+HAILO_WHISPER_ENCODER_HEF=/path/to/small-whisper-encoder-10s.hef
+HAILO_WHISPER_DECODER_HEF=/path/to/small-whisper-decoder-10s-out-seq-64.hef
+HAILO_WHISPER_NPY_DIR=/path/to/dir/with/small-variant-npy/files
+
+./stop.sh && ./start.sh
+```
 
 ## Restart the kiosk
 
