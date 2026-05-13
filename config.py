@@ -239,14 +239,14 @@ CHAT_ASR_BACKEND = "auto"
 # the CLI's argparse choices yet. If you obtain the HEFs separately,
 # set HAILO_WHISPER_MODEL="small" and point HAILO_WHISPER_*_HEF /
 # HAILO_WHISPER_NPY_DIR at the files. See docs/hailo-whisper.md.
-HAILO_WHISPER_MODEL = "base"
+HAILO_WHISPER_MODEL = os.environ.get("HAILO_WHISPER_MODEL", "base")
 
-# File resolution. Try the project-local models/ first (symlink
-# convention), then fall back to hailo-apps's install location
-# (/usr/local/hailo/resources/...) -- which is where Hailo's CLI
-# auto-downloader puts files on first run. Whichever exists wins.
-# Override either via env var (HAILO_WHISPER_ENCODER_HEF etc.) for
-# a custom layout.
+# File resolution. Each setting picks the first option that exists,
+# unless the corresponding env var is set (in which case the env var
+# wins outright -- the user pinned a specific path on purpose).
+#   1. HAILO_WHISPER_{ENCODER,DECODER}_HEF / _NPY_DIR env var
+#   2. pi5/models/whisper-{variant}-{role}.hef        (symlink convention)
+#   3. /usr/local/hailo/resources/models/hailo10h/... (hailo-apps install)
 def _first_existing(*paths):
     for p in paths:
         p = Path(p)
@@ -256,15 +256,25 @@ def _first_existing(*paths):
     # points at the project's preferred install spot.
     return Path(paths[0])
 
+def _env_path_or_search(env_var: str, *fallback_paths) -> Path:
+    """If env_var is set, use it verbatim (user pinned a path on
+    purpose). Otherwise fall back to the first-existing search."""
+    explicit = os.environ.get(env_var)
+    if explicit:
+        return Path(explicit)
+    return _first_existing(*fallback_paths)
+
 # Note the embedded "-10s" / "-10s-out-seq-64" suffixes -- Hailo's
 # downloader bakes them into the filenames. Tiny.en is Hailo-10H
 # only and uses the same naming with "tiny.en" prefix.
-HAILO_WHISPER_ENCODER_HEF = _first_existing(
+HAILO_WHISPER_ENCODER_HEF = _env_path_or_search(
+    "HAILO_WHISPER_ENCODER_HEF",
     MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-encoder.hef",
     f"/usr/local/hailo/resources/models/hailo10h/"
     f"{HAILO_WHISPER_MODEL}-whisper-encoder-10s.hef",
 )
-HAILO_WHISPER_DECODER_HEF = _first_existing(
+HAILO_WHISPER_DECODER_HEF = _env_path_or_search(
+    "HAILO_WHISPER_DECODER_HEF",
     MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-decoder.hef",
     f"/usr/local/hailo/resources/models/hailo10h/"
     f"{HAILO_WHISPER_MODEL}-whisper-decoder-10s-out-seq-64.hef",
@@ -272,14 +282,18 @@ HAILO_WHISPER_DECODER_HEF = _first_existing(
 # The .npy assets live in a shared directory; Hailo's pipeline picks
 # the right ones by filename suffix (e.g. token_embedding_weight_base.npy
 # vs ..._tiny.npy).
-HAILO_WHISPER_NPY_DIR = _first_existing(
+HAILO_WHISPER_NPY_DIR = _env_path_or_search(
+    "HAILO_WHISPER_NPY_DIR",
     MODELS_DIR / f"whisper-{HAILO_WHISPER_MODEL}-assets",
     "/usr/local/hailo/resources/npy",
 )
 # add_embed: hailo-apps sets True for Hailo-8 / Hailo-8L (embedding
 # matmul runs on the host) and False for Hailo-10H (embedding runs on
 # the chip). False is the default for the Pi 5 + AI HAT 2+.
-HAILO_WHISPER_ADD_EMBED = False
+HAILO_WHISPER_ADD_EMBED = (
+    os.environ.get("HAILO_WHISPER_ADD_EMBED", "false").lower()
+    in ("1", "true", "yes")
+)
 WHISPER_MODEL = "tiny.en"           # "tiny.en" | "base.en" | "small.en"
 WHISPER_DEVICE = "cpu"              # Pi 5 has no GPU; keep "cpu".
 WHISPER_COMPUTE_TYPE = "int8"       # 8-bit quantisation for memory.
