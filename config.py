@@ -115,9 +115,21 @@ PIPER_MODEL_PATH = MODELS_DIR / "piper" / "en_US-hfc_female-medium.onnx"
 
 # Pad the start of each TTS utterance with this much silence. USB speakers
 # (Anker A3301 etc.) often clip the first ~300 ms while their amp wakes up.
-# 0 disables. The silence is inserted *into the WAV*, not added as a
-# blocking sleep, so total latency is the same either way.
+# 0 disables. In the streaming TTS path the silence is written to aplay's
+# stdin before the first real audio chunk; in the legacy file path it's
+# inserted into the WAV. Total latency is similar either way.
 TTS_PREBUFFER_MS = 500
+
+# Stream TTS audio to aplay as soon as Piper emits each chunk, rather than
+# synthesising the whole utterance to a temp WAV first. Saves ~1-2 s on
+# long replies before audio starts. Falls back to the file path
+# automatically if the installed piper version doesn't expose the
+# generator API.
+# Set TTS_STREAMING=false in .env to force the file path (useful if a
+# specific voice / hardware combination has audio glitches on streaming).
+TTS_STREAMING = os.environ.get("TTS_STREAMING", "true").lower() in (
+    "1", "true", "yes",
+)
 
 # ---- Audio output for TTS -------------------------------------------------
 # None  -> use system default audio sink (HDMI / 3.5 mm / whatever PipeWire

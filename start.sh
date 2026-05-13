@@ -233,7 +233,8 @@ else
 fi
 echo "   mic        : sounddevice index $SD_DEVICE"
 echo "   speaker    : $AUDIO_OUTPUT_DEVICE"
-echo "   web URL    : $KIOSK_URL"
+echo "   kiosk URL  : $KIOSK_URL"
+echo "   admin URL  : http://<host>:8081/   (start with ./start_admin.sh)"
 echo "   backend log: $KIOSK_BACKEND_LOG"
 if [[ "$ADMIN_PASS_GENERATED" == 1 ]]; then
     echo "   admin user : $KIOSK_ADMIN_USER"

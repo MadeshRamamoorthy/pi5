@@ -90,6 +90,30 @@ State transitions log the *reason*:
 [state] ACTIVE -> IDLE (user closed, interactions=1)
 ```
 
+## Running admin separately
+
+The admin app is a **separate Flask process** on port 8081. It owns no
+kiosk state — no camera worker, no Vosk listener, no SSE bus. Run it
+when you want to edit content (projects, sessions, employee profiles)
+or upload a photo registration without the kiosk being live.
+
+```bash
+./start_admin.sh             # admin only, port 8081
+./start.sh                   # kiosk only, port 8090
+# Both at once -- they share faces.db (WAL) and the Hailo NPU (SHARED
+# group_id). Tested side-by-side; no contention errors.
+```
+
+Either side can crash, restart, or be skipped entirely. The kiosk
+greets known visitors from `faces.db`. Admin reads + writes the same
+file. Updates propagate at the next read — no inter-process messaging.
+
+When the kiosk is on the dashboard (IDLE), the admin process can
+acquire the Hailo NPU briefly to run a photo registration. The kiosk
+queues nothing; HailoRT's scheduler multiplexes the two VDevices.
+
+See [admin.md](admin.md) for the admin URL, API, and authentication.
+
 ## Auto-start on boot
 
 Add a user systemd unit at `~/.config/systemd/user/echo-scope.service`:

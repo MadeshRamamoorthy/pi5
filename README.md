@@ -54,7 +54,7 @@ Full docs live in [`docs/`](docs/).
 | 🎙️ [Speech](docs/speech.md) | Wake word, chat-voice, chat LLM, TTS |
 | ⚡ [Hailo Whisper](docs/hailo-whisper.md) | NPU speech-to-text setup |
 | 😀 [Face recognition](docs/face-recognition.md) | Pipeline, registration, learning, liveness |
-| 🔒 [Admin UI](docs/admin.md) | `/admin` tabs and HTTP API |
+| 🔒 [Admin UI](docs/admin.md) | Standalone admin app on port 8081 (runs independent of kiosk) |
 | 🔁 [State machine](docs/state-machine.md) | IDLE / ACTIVE transitions |
 | 🎛️ [Tuning](docs/tuning.md) | Every `config.py` knob in one place |
 | 🩺 [Troubleshooting](docs/troubleshooting.md) | Symptom → fix |

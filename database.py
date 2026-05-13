@@ -65,6 +65,11 @@ class FaceDB:
         # workload is light enough that lock contention is a non-issue.
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
+        # WAL + busy_timeout: two processes (kiosk + standalone admin) share
+        # this file. WAL allows concurrent readers + one writer without
+        # blocking, busy_timeout retries silently if both write at once.
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA busy_timeout = 2000")
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()

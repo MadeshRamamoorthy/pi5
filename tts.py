@@ -118,8 +118,103 @@ class PiperPyBackend(_Backend):
         self.model_name = model_path.name
         self.device = output_device
         self._proc: subprocess.Popen | None = None
+        # Probe whether piper1-gpl's generator API is available + how
+        # AudioChunk exposes its PCM. Once at init -- cheap (single
+        # synth of " ") and avoids per-utterance hasattr dispatch.
+        self._streaming_ok = False
+        self._chunk_to_bytes = None
+        self._chunk_sample_rate = None
+        self._chunk_sample_width = 2
+        self._chunk_channels = 1
+        self._probe_streaming()
+
+    def _probe_streaming(self) -> None:
+        """Try calling voice.synthesize(" ") as a generator. If it yields
+        an AudioChunk-like object with discoverable PCM bytes, cache the
+        accessor and we're set. Anything that fails leaves streaming off
+        and we fall back to the file path."""
+        try:
+            gen = self._voice.synthesize(" ")
+            if not hasattr(gen, "__next__"):
+                return
+            first = next(iter(gen))
+        except (TypeError, StopIteration, Exception):
+            return
+        # Find a way to get raw int16 PCM bytes out of `first`.
+        accessor = None
+        for name, fn in (
+            ("audio_int16_bytes", lambda c: c.audio_int16_bytes),
+            ("audio_int16_array.tobytes()",
+             lambda c: c.audio_int16_array.tobytes()),
+            ("audio_bytes", lambda c: c.audio_bytes),
+            ("bytes(chunk)", lambda c: bytes(c)),
+        ):
+            try:
+                buf = fn(first)
+            except Exception:
+                continue
+            if isinstance(buf, (bytes, bytearray, memoryview)) and len(buf) > 0:
+                accessor = fn
+                break
+        if accessor is None:
+            return
+        self._chunk_to_bytes = accessor
+        self._chunk_sample_rate = getattr(first, "sample_rate", None) or \
+            getattr(getattr(self._voice, "config", None), "sample_rate", None)
+        self._chunk_sample_width = getattr(first, "sample_width", 2)
+        self._chunk_channels = getattr(first, "sample_channels", 1)
+        if self._chunk_sample_rate:
+            self._streaming_ok = True
 
     def speak(self, text: str) -> None:
+        if self._streaming_ok and getattr(config, "TTS_STREAMING", True):
+            self._speak_stream(text)
+        else:
+            self._speak_file(text)
+
+    def _speak_stream(self, text: str) -> None:
+        """Pipe Piper PCM straight to aplay's stdin. First chunk lands
+        in ~200-300 ms vs ~1.5-2 s for the file path on long replies."""
+        chunks = iter(self._voice.synthesize(text))
+        try:
+            first = next(chunks)
+        except StopIteration:
+            return
+        sr = getattr(first, "sample_rate", None) or self._chunk_sample_rate
+        sw = getattr(first, "sample_width", self._chunk_sample_width)
+        ch = getattr(first, "sample_channels", self._chunk_channels)
+        fmt = {1: "U8", 2: "S16_LE", 4: "S32_LE"}.get(sw, "S16_LE")
+        cmd = ["aplay", "-q", "-r", str(sr), "-c", str(ch), "-f", fmt]
+        if self.device:
+            cmd += ["-D", self.device]
+        # bufsize=0: each write flushes to aplay immediately. Default 8 KiB
+        # buffer at 22 kHz adds ~180 ms before aplay sees anything.
+        self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, bufsize=0)
+        try:
+            if config.TTS_PREBUFFER_MS > 0:
+                n_samples = int(sr * config.TTS_PREBUFFER_MS / 1000)
+                self._proc.stdin.write(b"\x00" * (n_samples * sw * ch))
+            self._proc.stdin.write(self._chunk_to_bytes(first))
+            for chunk in chunks:
+                self._proc.stdin.write(self._chunk_to_bytes(chunk))
+        except (BrokenPipeError, OSError):
+            # stop() was called -- aplay terminated, pipe is dead. Quiet exit.
+            pass
+        finally:
+            try:
+                if self._proc.stdin:
+                    self._proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                self._proc.wait()
+            finally:
+                self._proc = None
+
+    def _speak_file(self, text: str) -> None:
+        """Legacy path: synthesize whole utterance to a temp WAV, then
+        aplay it. Slower to start but bulletproof on older piper or odd
+        voices."""
         fd, wav = tempfile.mkstemp(suffix=".wav", prefix="tts_")
         os.close(fd)
         try:
