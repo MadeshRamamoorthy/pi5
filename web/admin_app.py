@@ -188,13 +188,20 @@ def create_admin_app(
         db.set_employee_profile(emp_id, **update)
         return ("", 204)
 
-    @app.route("/api/employees/<emp_id>/welcome", methods=["POST"])
+    @app.route("/api/employees/<emp_id>/welcome", methods=["POST", "DELETE"])
     def emp_regen_welcome(emp_id):
+        """POST   : re-fetch profile_url and regenerate welcome cache.
+        DELETE : clear the cached welcome (back to default random
+                 greeting at next recognition)."""
         if not check_admin_auth():
             return request_admin_auth()
-        profile = db.get_employee_profile(emp_id)
-        if not profile:
+        if not db.employee_exists(emp_id):
             return ("not found", 404)
+        if request.method == "DELETE":
+            db.set_employee_profile(emp_id, welcome_cache=None)
+            return jsonify({"ok": True, "welcome": ""})
+        # POST -- regenerate from URL.
+        profile = db.get_employee_profile(emp_id)
         url = (profile.get("profile_url") or "").strip()
         if not url:
             return jsonify({"ok": False,

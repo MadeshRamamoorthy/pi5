@@ -167,6 +167,7 @@ or paste a few sentences of bio text directly..."></textarea>
         <p id="edit-emp-cache">—</p>
       </div>
       <div class="form-actions">
+        <button type="button" id="edit-emp-clear" class="danger">Clear cached welcome</button>
         <button type="button" id="edit-emp-regen">Regenerate from URL</button>
         <button type="submit">Save</button>
       </div>
@@ -505,6 +506,29 @@ document.getElementById("edit-emp-regen").addEventListener("click",
       status.textContent = "Regenerated.";
     } else {
       status.textContent = `Regenerate failed: ${data.error || r.status}`;
+    }
+});
+
+// Clear the cached welcome -- next greet falls back to the default
+// random greeting unless a custom_welcome is also set.
+document.getElementById("edit-emp-clear").addEventListener("click",
+  async () => {
+    if (!confirm("Clear the generated welcome message for this person? " +
+                 "Next greet will use the default random greeting unless " +
+                 "a custom welcome is set.")) return;
+    const emp_id = document.getElementById("edit-emp-id").value;
+    const status = document.getElementById("edit-emp-status");
+    status.textContent = "Clearing…";
+    const r = await fetch(
+      `/api/employees/${encodeURIComponent(emp_id)}/welcome`,
+      { method: "DELETE" },
+    );
+    if (r.ok) {
+      document.getElementById("edit-emp-cache").textContent = "— none —";
+      status.textContent = "Cleared.";
+      refresh();    // refresh the row so the table reflects the change
+    } else {
+      status.textContent = `Clear failed: ${await r.text()}`;
     }
 });
 document.getElementById("add-project").addEventListener("submit", async (ev) => {
