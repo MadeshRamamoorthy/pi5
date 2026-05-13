@@ -40,20 +40,52 @@ vs. our other backends:
 | OpenAI Whisper API     | ~1-2 s        | ~$0.0002/min |
 | faster-whisper tiny.en (Pi 5 CPU) | ~3-4 s | $0 |
 
+## Two integration paths
+
+HailoRT shipped a native Whisper API in 5.2.0. The kiosk supports
+both paths and auto-selects:
+
+| Path | When | What it needs |
+|------|------|---------------|
+| **Native `Speech2Text`** (recommended) | HailoRT ≥ 5.2.0 | One **combined** HEF (encoder + decoder packed together). No `.npy` files, no `add_embed`, no patches. |
+| Legacy `hailo-apps.WhisperPipeline` | HailoRT 5.0–5.1 *or* if you only have **separate** encoder + decoder HEFs | Two HEF files + `npy_dir` of decoder tokenization assets + the `add_embed` flag set correctly for your chip. |
+
+The native path is dramatically simpler. If your HailoRT is recent
+enough, prefer it.
+
+```bash
+hailortcli -v          # must show 5.2.0 or newer
+```
+
+To use the native path: set `HAILO_WHISPER_HEF` in `.env` (or
+`config.py`) to a combined HEF, and the kiosk's auto-selector picks
+`hailo-whisper-native` automatically.
+
+```bash
+# .env
+HAILO_WHISPER_HEF=/usr/local/hailo/resources/models/hailo10h/Whisper-Small.hef
+```
+
 ## How the kiosk picks an STT backend
 
 `config.CHAT_ASR_BACKEND = "auto"` (the default) goes through this
 precedence:
 
-1. **Hailo Whisper** — chosen when the encoder HEF, decoder HEF, AND
-   the `npy_dir` (decoder tokenization assets) are all on disk.
-   `hailo-apps` import is deferred to first use so a missing package
-   only fails on the first chat question, not at boot.
-2. **OpenAI Whisper** — chosen when `OPENAI_API_KEY` is set.
-3. **faster-whisper** — pure CPU fallback for fully offline boxes.
+1. **`hailo-whisper-native`** (preferred) — chosen when
+   `HAILO_WHISPER_HEF` points at an existing combined HEF. Uses
+   HailoRT 5.2+'s built-in `Speech2Text` API; no application-level
+   pipeline code.
+2. **`hailo-whisper`** (legacy) — chosen when the separate encoder
+   HEF, decoder HEF, AND the `npy_dir` are all on disk and the
+   encoder/decoder paths differ. Uses `hailo-apps`'s
+   `WhisperPipeline`. The auto-selector deliberately skips this path
+   when encoder and decoder paths point at the same file (combined
+   HEF) since the legacy code assumes split files.
+3. **`openai`** — chosen when `OPENAI_API_KEY` is set.
+4. **`faster-whisper`** — pure CPU fallback for fully offline boxes.
 
-Force a specific backend: `CHAT_ASR_BACKEND = "hailo"` (or
-`"openai"` / `"faster-whisper"` / `"vosk"`).
+Force a specific backend: `CHAT_ASR_BACKEND = "hailo-whisper-native"`
+(or `"hailo-whisper"` / `"openai"` / `"faster-whisper"` / `"vosk"`).
 
 ## Setup on the Pi 5 + AI HAT 2+ (Hailo-10H)
 

@@ -124,6 +124,109 @@ class OpenAIWhisperASR(ChatASR):
 
 
 # ---------------- Hailo Whisper (NPU) --------------------------------
+#
+# Two paths:
+#   1. HailoWhisperNativeASR -- uses HailoRT 5.2+ built-in genai.Speech2Text
+#      API. Takes a single combined HEF, handles encoder+decoder
+#      internally. No .npy / add_embed / network-group fiddling.
+#      Recommended.
+#   2. HailoWhisperASR -- legacy path via hailo-apps's whisper_pipeline.py.
+#      Needs separate encoder + decoder HEFs + .npy assets.
+#      Kept for older HailoRT installs (< 5.2.0).
+
+
+class HailoWhisperNativeASR(ChatASR):
+    """Whisper on Hailo NPU via HailoRT 5.2+'s native genai.Speech2Text.
+
+    Per the official example in hailo_platform.genai, all you need is a
+    single combined HEF that contains encoder + decoder network groups.
+    HailoRT loads, schedules, and runs the autoregressive decode loop
+    internally -- no application-level pipeline code, no .npy files, no
+    add_embed flag.
+
+    Requires HailoRT >= 5.2.0. Falls through to a clear error otherwise
+    so the factory can pick the legacy backend.
+    """
+
+    label = "hailo-whisper-native"
+
+    def __init__(self, hef_path: str | None = None,
+                 language: str = "en", timeout_ms: int = 15_000):
+        self._hef_path = str(hef_path or
+                             getattr(config, "HAILO_WHISPER_HEF", "")
+                             or "")
+        self._language = language
+        self._timeout_ms = timeout_ms
+        self._vdevice = None
+        self._speech2text = None
+        self._task = None
+        self._lock = threading.Lock()
+
+    def _ensure_pipeline(self) -> None:
+        if self._speech2text is not None:
+            return
+        if not self._hef_path or not Path(self._hef_path).is_file():
+            raise RuntimeError(
+                f"Hailo Whisper HEF not found: {self._hef_path}\n"
+                "Set HAILO_WHISPER_HEF to a combined Whisper HEF (e.g. "
+                "Whisper-Small.hef from Hailo's Model Zoo)."
+            )
+        try:
+            from hailo_platform import VDevice, HailoSchedulingAlgorithm
+            from hailo_platform.genai import Speech2Text, Speech2TextTask
+        except ImportError as exc:
+            raise RuntimeError(
+                "hailo_platform.genai.Speech2Text is missing. This API "
+                "requires HailoRT >= 5.2.0. Check your version with "
+                "`hailortcli -v` and upgrade if older."
+            ) from exc
+
+        params = VDevice.create_params()
+        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        params.group_id = "SHARED"
+        print(f"[asr] loading Hailo Whisper (native API) "
+              f"from {self._hef_path}")
+        self._vdevice = VDevice(params)
+        self._speech2text = Speech2Text(self._vdevice, self._hef_path)
+        self._task = Speech2TextTask
+
+    def warmup(self) -> None:
+        self._ensure_pipeline()
+
+    def transcribe(self, pcm: bytes, samplerate: int) -> str:
+        self._ensure_pipeline()
+        audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        if samplerate != 16000:
+            from audio_utils import resample_int16
+            resampled = resample_int16(
+                (audio * 32768).astype(np.int16), samplerate, 16000,
+            )
+            audio = resampled.astype(np.float32) / 32768.0
+        audio = audio.astype("<f4")
+        with self._lock:
+            segments = self._speech2text.generate_all_segments(
+                audio_data=audio,
+                task=self._task.TRANSCRIBE,
+                language=self._language,
+                timeout_ms=self._timeout_ms,
+            )
+        if not segments:
+            return ""
+        return "".join(seg.text for seg in segments).strip()
+
+    def stop(self) -> None:
+        if self._speech2text is not None:
+            try:
+                self._speech2text.release()
+            except Exception:
+                pass
+            self._speech2text = None
+        if self._vdevice is not None:
+            try:
+                self._vdevice.release()
+            except Exception:
+                pass
+            self._vdevice = None
 
 
 class HailoWhisperASR(ChatASR):
@@ -326,19 +429,23 @@ class VoskFreeformASR(ChatASR):
 def make_chat_asr() -> ChatASR:
     """Pick an ASR backend.
 
-    `auto` precedence (matches the user's requested setup -- Hailo
-    NPU first, OpenAI as the network backup, local faster-whisper
-    as the fully-offline fallback):
+    `auto` precedence:
 
-      1. hailo-whisper -- if both encoder and decoder HEFs exist on
-         disk. ~200-700 ms / utterance, $0, no network.
-      2. openai        -- if OPENAI_API_KEY is set. ~1-2 s round-trip.
-      3. faster-whisper -- pure CPU fallback. ~3-4 s on Pi 5.
+      1. hailo-whisper-native -- HailoRT 5.2+ built-in Speech2Text API.
+         One combined HEF, no .npy / add_embed / patches. Picked when
+         HAILO_WHISPER_HEF is set and the file exists.
+      2. hailo-whisper        -- legacy hailo-apps WhisperPipeline path.
+         Needs separate encoder + decoder HEFs + .npy assets dir.
+         Picked when those three things all exist.
+      3. openai               -- if OPENAI_API_KEY is set.
+      4. faster-whisper       -- pure CPU fallback.
     """
     backend = config.CHAT_ASR_BACKEND.lower()
     if backend == "auto":
         backend = _auto_pick_backend()
         print(f"[asr] auto-selected backend: {backend}")
+    if backend in ("hailo-native", "hailo-whisper-native", "speech2text"):
+        return HailoWhisperNativeASR()
     if backend in ("hailo", "hailo-whisper"):
         return HailoWhisperASR()
     if backend in ("faster-whisper", "fasterwhisper", "whisper"):
@@ -351,10 +458,14 @@ def make_chat_asr() -> ChatASR:
 
 
 def _auto_pick_backend() -> str:
-    # Hailo Whisper: only choose it when the HEFs AND the decoder
-    # tokenization assets directory are all on disk. The hailo-apps
-    # package import is deferred to first transcribe(), so file checks
-    # are sufficient here.
+    # 1. Hailo native Speech2Text (HailoRT 5.2+). Picked when a single
+    #    combined HEF is configured AND on disk.
+    native_hef = getattr(config, "HAILO_WHISPER_HEF", None)
+    if native_hef and Path(native_hef).is_file():
+        return "hailo-whisper-native"
+
+    # 2. Legacy hailo-apps pipeline. Needs separate encoder + decoder
+    #    HEFs + .npy assets directory all on disk.
     size = getattr(config, "HAILO_WHISPER_MODEL", "base")
     models_dir = getattr(config, "MODELS_DIR", Path("models"))
     enc = getattr(config, "HAILO_WHISPER_ENCODER_HEF",
@@ -363,8 +474,15 @@ def _auto_pick_backend() -> str:
                   models_dir / f"whisper-{size}-decoder.hef")
     npy = getattr(config, "HAILO_WHISPER_NPY_DIR",
                   models_dir / f"whisper-{size}-assets")
-    if Path(enc).is_file() and Path(dec).is_file() and Path(npy).is_dir():
+    # If encoder and decoder are the same file path it's a combined HEF
+    # -- the legacy hailo-apps path needs them split, so don't pick it.
+    same_file = Path(enc).resolve() == Path(dec).resolve() if (
+        Path(enc).exists() and Path(dec).exists()) else False
+    if (not same_file and Path(enc).is_file() and Path(dec).is_file()
+            and Path(npy).is_dir()):
         return "hailo-whisper"
+
+    # 3 / 4. Network or local CPU fallback.
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     return "faster-whisper"

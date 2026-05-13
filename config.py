@@ -241,6 +241,12 @@ CHAT_ASR_BACKEND = "auto"
 # HAILO_WHISPER_NPY_DIR at the files. See docs/hailo-whisper.md.
 HAILO_WHISPER_MODEL = os.environ.get("HAILO_WHISPER_MODEL", "base")
 
+# Combined HEF path for HailoRT 5.2+'s native Speech2Text API. When
+# set + the file exists, the auto-selector picks the new native path
+# instead of hailo-apps's whisper_pipeline.py. One file = encoder +
+# decoder packed together. See docs/hailo-whisper.md.
+HAILO_WHISPER_HEF = os.environ.get("HAILO_WHISPER_HEF") or None
+
 # File resolution. Each setting picks the first option that exists,
 # unless the corresponding env var is set (in which case the env var
 # wins outright -- the user pinned a specific path on purpose).
