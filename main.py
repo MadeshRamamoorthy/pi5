@@ -100,6 +100,24 @@ def _draw_overlays(frame, face_labels):
         )
 
 
+def _is_goodbye(text: str) -> bool:
+    """Return True if the transcribed user utterance ends with any of
+    the goodbye tokens from `config.CHAT_GOODBYE_TOKENS`. Case-insensitive,
+    trailing punctuation stripped, matches the WHOLE utterance OR the
+    final words after a space ("alright, bye." -> matches "bye")."""
+    t = (text or "").lower().strip().rstrip(".!?,;:")
+    if not t:
+        return False
+    tokens = getattr(config, "CHAT_GOODBYE_TOKENS", ())
+    for tok in tokens:
+        tok = tok.lower().strip()
+        if not tok:
+            continue
+        if t == tok or t.endswith(" " + tok):
+            return True
+    return False
+
+
 # ---------- silent learning -----------------------------------------------
 
 
@@ -709,6 +727,22 @@ class CameraWorker(threading.Thread):
 
     def _submit_chat(self, emp_id: str, question: str):
         self._append_chat("user", question)
+        # Local-only goodbye detection -- no LLM call. Catches "bye",
+        # "thanks bye", "i'm done", etc. (see config.CHAT_GOODBYE_TOKENS).
+        # Saves a chat-budget slot AND ~1-2 s of LLM round-trip on the
+        # most common session-end gesture.
+        if _is_goodbye(question):
+            farewell = messages.random_farewell()
+            print(f"[chat] goodbye intent matched: {question!r} -> {farewell!r}",
+                  flush=True)
+            self._append_chat("assistant", farewell)
+            self.greeter.say(farewell)
+            self._last_chat_at = time.time()
+            # Trigger the same IDLE transition as the X button. The
+            # camera worker reads idle_event each loop iteration and
+            # handles the rest (tts.interrupt, listener.resume, etc).
+            self.idle_event.set()
+            return
         if self.chat.budget.remaining(emp_id) <= 0:
             answer = (
                 f"Lovely chatting! That's {config.CHAT_MAX_QUESTIONS_PER_SESSION} "

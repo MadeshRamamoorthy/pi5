@@ -162,6 +162,36 @@ IDLE_AFTER_LAST_INTERACTION_SEC = 30
 # least this long after the last chat message. Gives the user time to
 # read the answer and ask a follow-up without the kiosk dropping out.
 CHAT_KEEPALIVE_SEC = 180
+
+# Phrases that end the chat session without calling the LLM. Matched
+# against the bottom of the transcribed user utterance (case-insensitive,
+# trailing punctuation stripped). On match: kiosk speaks a random line
+# from messages.FAREWELL_RESPONSES and drops back to the dashboard.
+# Tune for local idioms ("tata", "ciao", "see ya") if needed.
+CHAT_GOODBYE_TOKENS = (
+    "bye",
+    "goodbye",
+    "good bye",
+    "bye bye",
+    "thanks bye",
+    "thank you bye",
+    "thanks goodbye",
+    "see you",
+    "see you later",
+    "see ya",
+    "talk to you later",
+    "that's all",
+    "thats all",
+    "i'm done",
+    "im done",
+    "we're done",
+    "were done",
+    "all done",
+    "end conversation",
+    "end chat",
+    "stop chat",
+    "exit",
+)
 # After the user taps "No thanks" on the auto-register prompt, don't
 # re-open it for this many seconds even if their face is still unknown.
 REGISTER_DECLINE_COOLDOWN_SEC = 120

@@ -450,6 +450,21 @@ body[data-chat-mode="true"] .fun-fact { display: none; }
   align-items: center;
   justify-content: center;
 }
+.chat-endhint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+}
+.chat-endhint em {
+  color: var(--accent);
+  font-style: normal;
+  background: rgba(0, 212, 255, 0.10);
+  padding: 1px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
 .camera-frame .corner {
   position: absolute;
   width: 40px; height: 40px;

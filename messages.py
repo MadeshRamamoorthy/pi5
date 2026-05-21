@@ -77,6 +77,15 @@ REGISTRATION_PROMPTS = {
 }
 
 
+FAREWELL_RESPONSES = [
+    "See you later!",
+    "Take care!",
+    "Bye for now — come back anytime.",
+    "Catch you later. Have a great one!",
+    "Thanks for chatting. Bye!",
+]
+
+
 AI_FUN_FACTS = [
     "The term 'Artificial Intelligence' was coined in 1956 at the Dartmouth Conference!",
     "ChatGPT reached 100 million users in just 2 months — the fastest-growing app ever!",
@@ -134,6 +143,10 @@ def random_unrecognized_greeting() -> str:
 def random_registration_prompt(category: str, **fmt) -> str:
     line = _pick(REGISTRATION_PROMPTS.get(category, []))
     return line.format(**fmt) if fmt else line
+
+
+def random_farewell() -> str:
+    return _pick(FAREWELL_RESPONSES)
 
 
 def get_rotating_content() -> dict:
