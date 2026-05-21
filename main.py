@@ -101,19 +101,44 @@ def _draw_overlays(frame, face_labels):
 
 
 def _is_goodbye(text: str) -> bool:
-    """Return True if the transcribed user utterance ends with any of
-    the goodbye tokens from `config.CHAT_GOODBYE_TOKENS`. Case-insensitive,
-    trailing punctuation stripped, matches the WHOLE utterance OR the
-    final words after a space ("alright, bye." -> matches "bye")."""
-    t = (text or "").lower().strip().rstrip(".!?,;:")
+    """Return True if the transcribed user utterance signals end-of-chat.
+
+    Normalisation: lowercase, strip leading/trailing whitespace, replace
+    every punctuation character with a space, collapse runs of
+    whitespace. So "Bye, thank you!" -> "bye thank you" -- matches the
+    token "bye thank you" directly.
+
+    Then matches when the normalised utterance is EITHER:
+      - exactly a goodbye token, OR
+      - ends with " <token>"   ("alright bye"   -> matches "bye"), OR
+      - starts with "<token> " AND the utterance is <= 5 words long
+        ("bye thank you" matches, but "bye, I have one more question
+        to ask" does NOT -- 9 words, falls past the short-utterance
+        cap).
+
+    The short-utterance cap is the cheapest defence against a user
+    starting a long question with a polite "Bye" and then continuing.
+    """
+    import re
+    t = (text or "").lower().strip()
+    t = re.sub(r"[^\w\s']+", " ", t)        # punctuation -> space (keep apostrophe)
+    t = re.sub(r"\s+", " ", t).strip()
     if not t:
         return False
+    word_count = len(t.split())
     tokens = getattr(config, "CHAT_GOODBYE_TOKENS", ())
     for tok in tokens:
         tok = tok.lower().strip()
         if not tok:
             continue
+        # Exact match + endswith always fire -- the goodbye word is at
+        # the end of the sentence, which is the strongest signal.
         if t == tok or t.endswith(" " + tok):
+            return True
+        # Startswith only fires on short utterances to avoid cutting
+        # off a user who began with a polite "bye" and is about to ask
+        # something else.
+        if word_count <= 5 and t.startswith(tok + " "):
             return True
     return False
 

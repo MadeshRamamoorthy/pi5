@@ -25,7 +25,7 @@ EMBEDDER_INPUT = (112, 112)
 EMBEDDING_DIM = 512
 
 # Recognition
-COSINE_MATCH_THRESHOLD = 0.38  # ArcFace: 0.35-0.45 typical; lower => looser match
+COSINE_MATCH_THRESHOLD = 0.42  # ArcFace: 0.35-0.45 typical; lower => looser match. Bumped after a live deployment where Parakh's gallery had silent-learned 25 extra polluted samples and was matching other faces -- tighter threshold + tighter silent-learn margins (below) prevent recurrence.
 # Each emp_id is greeted at most once per this many seconds. Lets the
 # system greet every recognised face in a multi-person scene without
 # spamming when someone keeps stepping in and out of frame.
@@ -175,7 +175,13 @@ CHAT_GOODBYE_TOKENS = (
     "bye bye",
     "thanks bye",
     "thank you bye",
+    "bye thank you",       # bye-first phrasings (startswith match)
+    "bye thanks",
     "thanks goodbye",
+    "goodbye thank you",
+    "okay bye",
+    "ok bye",
+    "alright bye",
     "see you",
     "see you later",
     "see ya",
@@ -358,11 +364,11 @@ CHAT_VOICE_SILENCE_RMS = 350        # int16 RMS threshold below which audio
 # more robust over time. Rate-limited and capped so the DB doesn't grow
 # unbounded.
 SILENT_LEARN_ENABLED = True
-SILENT_LEARN_MIN_SCORE = 0.70          # only learn from very confident matches
-SILENT_LEARN_MIN_MARGIN = 0.15         # best score must beat runner-up by this much
+SILENT_LEARN_MIN_SCORE = 0.75          # only learn from very confident matches (was 0.70)
+SILENT_LEARN_MIN_MARGIN = 0.20         # best score must beat runner-up by this much (was 0.15)
 SILENT_LEARN_MAX_SIMILARITY = 0.92     # skip if new sample is ~ a duplicate of an existing one
 SILENT_LEARN_MIN_INTERVAL_SEC = 60     # at most one new sample per person per minute
-SILENT_LEARN_MAX_SAMPLES_PER_PERSON = 30  # cap; oldest non-enrolment samples drop first
+SILENT_LEARN_MAX_SAMPLES_PER_PERSON = 10  # cap; oldest non-enrolment samples drop first (was 30 -- smaller cap = less room for drift to compound)
 
 # ---- Liveness (passive anti-spoofing) -------------------------------------
 # Master switch. When False, every face is treated as live -- no motion /
