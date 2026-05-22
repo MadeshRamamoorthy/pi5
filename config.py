@@ -237,9 +237,13 @@ MJPEG_QUALITY = 80                # JPEG quality for the camera stream
 MJPEG_MAX_FPS = 20                # display only; detection runs at full rate
 
 WEATHER_REFRESH_SEC = 1800        # 30 minutes
-WEATHER_LATITUDE = None           # set both to skip IP geolocation
-WEATHER_LONGITUDE = None
-WEATHER_FALLBACK_CITY = None      # used as label when lat/lon are pinned
+# Pinned to Calgary. IP geolocation was resolving the Pi's public IP to
+# Edmonton (ISP routing), so the kiosk reported the wrong city. With
+# lat/lon set, weather.py skips geolocation entirely and always reports
+# Calgary -- both on the idle widget and in chat ("It's N°C ... in Calgary").
+WEATHER_LATITUDE = 51.0447        # Calgary, AB
+WEATHER_LONGITUDE = -114.0719
+WEATHER_FALLBACK_CITY = "Calgary"  # label shown when lat/lon are pinned
 
 # ---- OpenAI / Ollama chat -------------------------------------------------
 OPENAI_MODEL = "gpt-4o-mini"
