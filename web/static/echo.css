@@ -378,6 +378,11 @@ body[data-chat-mode="true"] .fun-fact { display: none; }
   margin-bottom: 10px;
 }
 .chat-panel .card-title h3 { font-size: 16px; }
+.chat-person {
+  font-weight: 600;
+  color: var(--accent, #00D4FF);
+  letter-spacing: 0.02em;
+}
 .chat-remaining {
   margin-left: auto;
   font-size: 11px;

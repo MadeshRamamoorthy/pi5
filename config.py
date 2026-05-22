@@ -72,14 +72,21 @@ UNKNOWN_FRAMES_BEFORE_REGISTER = 15
 # previous capture). The shift is checked in normalised units of the inter-eye
 # distance, so it works at any range. Use None for the first/calibration pose.
 #   ("right",  +x shift in image)   ("left", -x)   ("up", -y)   ("down", +y)
-# Three poses (frontal + two head turns) give enough angle coverage for
-# reliable recognition while keeping registration quick (~10-12 s total).
-# Add the tilt-up / tilt-down lines back if you want denser coverage.
+# Single frontal pose: registration is now "one good picture" -- the user
+# just looks at the camera and we grab POSE_FRAMES_PER_POSE stable frames in
+# a couple of seconds. Add the head-turn lines back below for denser angle
+# coverage if recognition struggles at extreme angles:
+#   ("Slowly turn a little to your right.", "right"),
+#   ("Now turn a little to your left.",     "left"),
 POSE_PROMPTS = [
-    ("Look straight at the camera.",   None),
-    ("Slowly turn a little to your right.", "right"),
-    ("Now turn a little to your left.",     "left"),
+    ("Look straight at the camera and hold still.", None),
 ]
+
+# How many stable frames to capture at each pose. With a single frontal pose
+# this is the total number of enrolment embeddings stored for a new person.
+# 3 gives the matcher a little natural variation (micro head movements,
+# blinks) without dragging the capture out.
+POSE_FRAMES_PER_POSE = 3
 
 POSE_HOLD_SEC = 1.0            # min time after prompt before we even *try* to capture
 POSE_STABLE_SEC = 0.4          # face landmarks must stay still for this long before capture
@@ -266,7 +273,10 @@ CHAT_HISTORY_TURNS = 6
 # ~150 tokens ~= 3-4 short sentences -- a hard ceiling so web-search
 # answers can't run long even if the model wants to ramble.
 CHAT_MAX_REPLY_TOKENS = 150
-CHAT_MAX_QUESTIONS_PER_SESSION = 5
+# Per-session question cap. Set high (effectively "no limit" for a normal
+# kiosk visit) -- the budget still exists as a backstop against runaway
+# sessions, but the UI no longer shows a countdown badge (see echo.js).
+CHAT_MAX_QUESTIONS_PER_SESSION = 25
 CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 
 # ---- Chat-voice ASR -------------------------------------------------------

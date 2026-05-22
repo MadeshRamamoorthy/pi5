@@ -102,11 +102,10 @@
     if ("register_message" in diff) bind("register-message", diff.register_message);
     if ("register_pose" in diff)    renderRegisterPose(diff.register_pose);
     if ("chat_history" in diff)     renderChatLog(diff.chat_history);
-    if ("chat_remaining" in diff) {
-      const n = diff.chat_remaining;
-      bind("chat-remaining-label",
-           n != null ? `${n} question${n === 1 ? "" : "s"} left` : "");
-    }
+    if ("person" in diff)           renderChatPerson(diff.person);
+    // Question countdown badge intentionally not shown -- the per-session
+    // cap is high enough to be a non-event for a normal visit, so a
+    // visible counter would just be noise. Budget still enforced server-side.
     refreshChatMode();
   }
 
@@ -295,6 +294,16 @@
     $("#pose-total").textContent = p.total ?? "?";
     $("#pose-prompt").textContent = p.prompt ?? "—";
     $("#pose-status").textContent = p.status ?? "";
+  }
+
+  // ---- chat header person name ------------------------------------------
+  // Shows " — Name" next to the CHAT title once someone is recognised, so
+  // the user can see the kiosk knows who they're talking to.
+  function renderChatPerson(p) {
+    const name = (p && p.name) ? String(p.name) : "";
+    $$('[data-bind="chat-person"]').forEach(el => {
+      el.textContent = name ? " — " + name : "";
+    });
   }
 
   // ---- chat log ---------------------------------------------------------

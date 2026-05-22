@@ -143,6 +143,28 @@ def _is_goodbye(text: str) -> bool:
     return False
 
 
+def _is_weather_query(text: str) -> bool:
+    """Return True for questions about the *current local* weather.
+
+    Deliberately conservative so it never hijacks broader questions
+    ("what is climate change?", "weather patterns in the 1800s"). We
+    answer these from the kiosk's own weather poller (state.weather)
+    instead of the LLM -- it's instant, free, and always correct for
+    the kiosk's location, and keeps the answer to one crisp line.
+    """
+    t = (text or "").lower()
+    if "weather" in t or "temperature" in t or "forecast" in t:
+        return True
+    if any(p in t for p in ("how hot", "how cold", "how warm")):
+        return True
+    if any(p in t for p in (
+        "is it raining", "is it snowing", "is it sunny",
+        "raining outside", "snowing outside",
+    )):
+        return True
+    return False
+
+
 # ---------- silent learning -----------------------------------------------
 
 
@@ -300,6 +322,11 @@ class CameraWorker(threading.Thread):
         # don't re-pop the overlay for this long. Otherwise the unknown-
         # face streak would re-open it immediately.
         self._register_declined_at = 0.0
+        # The first person greeted in an ACTIVE session "owns" it. We
+        # won't greet anyone else until the session ends, so a colleague
+        # who wanders into frame mid-conversation doesn't get called out
+        # over the current user. Reset to None on every IDLE -> ACTIVE.
+        self._session_primary: str | None = None
 
     def stop(self):
         self._stop.set()
@@ -345,6 +372,7 @@ class CameraWorker(threading.Thread):
                 last_interaction_at = activated_at
                 seen_in_session = set()
                 session_id = uuid.uuid4().hex[:12]
+                self._session_primary = None
                 self.greeter.reset_last()
                 self.liveness.reset()
                 self.chat.budget.reset()
@@ -494,9 +522,18 @@ class CameraWorker(threading.Thread):
                     if emp_id in seen_in_session:
                         last_known_emp_id = emp_id
                         continue
+                    # Greet-lock: the session's primary person has been
+                    # greeted and may be mid-conversation. Don't call out
+                    # anyone else who steps into frame until they leave
+                    # and the session resets.
+                    if (self._session_primary is not None
+                            and emp_id != self._session_primary):
+                        continue
                     if self.greeter.greet(emp_id, name):
                         last_interaction_at = time.time()
                         seen_in_session.add(emp_id)
+                        if self._session_primary is None:
+                            self._session_primary = emp_id
                         self.db.record_interaction(emp_id, session_id)
                         self._push_metrics()
                         last_known_emp_id = emp_id
@@ -696,11 +733,15 @@ class CameraWorker(threading.Thread):
             hold_until = time.time() + config.POSE_HOLD_SEC
             deadline = (time.time() + config.POSE_HOLD_SEC
                         + config.POSE_CAPTURE_TIMEOUT_SEC)
+            # Grab several stable frames at this one pose so a new person
+            # is enrolled from "one good picture" with a little natural
+            # variation (micro-movements between captures).
+            want = max(1, getattr(config, "POSE_FRAMES_PER_POSE", 1))
+            got = 0
             stable_since = None
             last_lms = None
-            captured = False
 
-            while not captured and time.time() < deadline:
+            while got < want and time.time() < deadline:
                 frame = grab_frame(self.cam)
                 self.frames.push(frame)
                 dets = self.pipe.detect(
@@ -718,7 +759,7 @@ class CameraWorker(threading.Thread):
                 elif time.time() < hold_until:
                     status = "hold steady..."
                 else:
-                    status = "capturing — hold the pose"
+                    status = f"capturing — hold still ({got + 1}/{want})"
                 self.state.patch("register_pose", status=status)
 
                 if ok and time.time() >= hold_until:
@@ -739,10 +780,14 @@ class CameraWorker(threading.Thread):
                             elif time.time() - stable_since >= config.POSE_STABLE_SEC:
                                 aligned = align_face(frame, det.landmarks)
                                 embeddings.append(self.pipe.embed(aligned))
+                                got += 1
                                 if direction is None and baseline_anchor is None:
                                     baseline_anchor = anchor
                                     baseline_eye_dist = eye_dist
-                                captured = True
+                                # Re-stabilise before grabbing the next
+                                # frame so successive captures aren't the
+                                # exact same instant.
+                                stable_since = None
                         else:
                             stable_since = None
                         last_lms = det.landmarks
@@ -753,13 +798,34 @@ class CameraWorker(threading.Thread):
                     stable_since = None
                     last_lms = None
 
-            if not captured:
-                self.greeter.say("That's okay! Let's try the next one.")
+            if got == 0:
+                self.greeter.say("That's okay, let's give it another try.")
                 self.tts.wait_idle(timeout=3)
         self.state.update(register_pose=None)
         return embeddings
 
     # ---- chat ---------------------------------------------------------
+
+    def _weather_answer(self) -> str | None:
+        """One-line current-conditions answer from the weather poller,
+        or None if we don't have a fresh reading yet (caller then falls
+        back to the LLM)."""
+        w = self.state.snapshot().get("weather") or {}
+        if not w.get("ok") or w.get("temp_c") is None:
+            return None
+        temp = round(w["temp_c"])
+        label = (w.get("label") or "").strip().lower()
+        city = (w.get("city") or "").strip()
+        ans = f"It's {temp}°C"
+        if label:
+            ans += f" and {label}"
+        if city:
+            ans += f" in {city}"
+        ans += " right now."
+        humidity = w.get("humidity")
+        if humidity is not None:
+            ans += f" Humidity is around {humidity}%."
+        return ans
 
     def _submit_chat(self, emp_id: str, question: str):
         # Capture prior conversation turns BEFORE appending this question,
@@ -783,6 +849,19 @@ class CameraWorker(threading.Thread):
             # handles the rest (tts.interrupt, listener.resume, etc).
             self.idle_event.set()
             return
+        # Local weather: answer current-conditions questions straight from
+        # the weather poller (no LLM, no web search, no budget slot). One
+        # crisp line, instant. Falls through to the LLM only if we have no
+        # fresh local reading yet.
+        if _is_weather_query(question):
+            ans = self._weather_answer()
+            if ans:
+                print(f"[chat] weather intent -> local data: {ans!r}",
+                      flush=True)
+                self._append_chat("assistant", ans)
+                self.greeter.say(ans)
+                self._last_chat_at = time.time()
+                return
         if self.chat.budget.remaining(emp_id) <= 0:
             answer = (
                 f"Lovely chatting! That's {config.CHAT_MAX_QUESTIONS_PER_SESSION} "
