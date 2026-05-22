@@ -201,6 +201,28 @@ class FaceDB:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def purge_all_faces(self) -> int:
+        """Wipe every registered face: deletes all employees, which
+        CASCADE-deletes their embeddings. Interaction counts (the hi-5
+        aggregates) are intentionally left intact. Returns the number of
+        employee rows removed."""
+        cur = self.conn.execute("DELETE FROM employees")
+        self.conn.commit()
+        return cur.rowcount
+
+    def purge_faces_older_than(self, hours: int) -> int:
+        """Delete employees registered more than `hours` ago (CASCADE
+        removes their embeddings). No-op when hours <= 0. Returns the
+        number of employee rows removed."""
+        if hours <= 0:
+            return 0
+        cur = self.conn.execute(
+            "DELETE FROM employees WHERE created_at < datetime('now', ?)",
+            (f"-{int(hours)} hours",),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def get_embeddings(self, emp_id: str) -> np.ndarray:
         rows = self.conn.execute(
             "SELECT embedding FROM face_embeddings WHERE emp_id = ?",

@@ -165,6 +165,25 @@ def _is_weather_query(text: str) -> bool:
     return False
 
 
+def _is_project_list_query(text: str) -> bool:
+    """Return True for "what projects / AI files / demos are on display
+    today?"-style listing questions. We answer these straight from the
+    project list shown on the dashboard (db/state.projects) so the kiosk
+    reads out exactly what's on display -- never a hallucinated extra.
+    Detail questions ("tell me about project X") fall through to the LLM,
+    which still gets the project list folded into its system prompt."""
+    t = (text or "").lower()
+    return any(p in t for p in (
+        "what project", "which project", "what projects", "what are the project",
+        "projects available", "projects on display", "project on display",
+        "what ai file", "which ai file", "what ai files", "ai files on display",
+        "what demo", "which demo", "what demos",
+        "what's on display", "whats on display", "what is on display",
+        "what can i see", "what can we see",
+        "list the project", "show me the project",
+    ))
+
+
 # ---------- silent learning -----------------------------------------------
 
 
@@ -318,6 +337,10 @@ class CameraWorker(threading.Thread):
         self.pipe = None
         self.liveness = LivenessChecker()
         self._stop = threading.Event()
+        # Heartbeat: stamped each loop iteration (and during long
+        # blocking ops like registration). The watchdog restarts the
+        # process if this goes stale -- see _start_watchdog in main().
+        self.last_loop_at = time.time()
         # When the user explicitly says "no thanks" to registration, we
         # don't re-pop the overlay for this long. Otherwise the unknown-
         # face streak would re-open it immediately.
@@ -331,15 +354,57 @@ class CameraWorker(threading.Thread):
     def stop(self):
         self._stop.set()
 
+    # ---- hardware lifecycle ----
+
+    def _cleanup(self):
+        """Release the camera + Hailo pipeline. Safe to call repeatedly."""
+        if self.cam is not None:
+            try:
+                self.cam.stop()
+            except Exception:
+                pass
+            try:
+                self.cam.close()
+            except Exception:
+                pass
+            self.cam = None
+        if self.pipe is not None:
+            try:
+                self.pipe.close()
+            except Exception:
+                pass
+            self.pipe = None
+
+    def _open_hardware(self):
+        """(Re)open the Hailo pipeline + camera, releasing any prior
+        handles first so a reopen can't leak the NPU / camera device."""
+        self._cleanup()
+        self.pipe = HailoFacePipeline(config.DETECTOR_HEF, config.EMBEDDER_HEF)
+        self.cam = open_camera()
+
     # ---- the loop ----
 
     def run(self):
-        try:
-            self.pipe = HailoFacePipeline(config.DETECTOR_HEF, config.EMBEDDER_HEF)
-            self.cam = open_camera()
-        except Exception as exc:
-            print(f"[camera-worker] init failed: {exc!r}")
-            return
+        # Init with retry + backoff. systemd (Restart=always) is the
+        # ultimate backstop, but a few retries here ride out transient
+        # boot races (camera not enumerated yet, NPU busy from a prior
+        # run) without a full process bounce.
+        retries = getattr(config, "WORKER_INIT_RETRIES", 5)
+        for attempt in range(1, retries + 1):
+            try:
+                self._open_hardware()
+                break
+            except Exception as exc:
+                print(f"[camera-worker] init attempt {attempt}/{retries} "
+                      f"failed: {exc!r}", flush=True)
+                self._cleanup()
+                if self._stop.is_set():
+                    return
+                time.sleep(min(2 ** attempt, 16))
+        else:
+            print("[camera-worker] init failed after retries; exiting for "
+                  "restart", flush=True)
+            os._exit(1)
         emp_ids, names, matrix = self.db.load_all()
         print(f"Loaded {matrix.shape[0]} embeddings for {len(set(emp_ids))} employees.")
         self._refresh_idle_data()
@@ -356,7 +421,16 @@ class CameraWorker(threading.Thread):
         last_idle_refresh = 0.0
 
         while not self._stop.is_set():
-            frame = grab_frame(self.cam)
+            self.last_loop_at = time.time()      # watchdog heartbeat
+            try:
+                frame = grab_frame(self.cam)
+            except Exception as exc:  # noqa: BLE001
+                # Transient camera read error -- skip this frame. A
+                # persistent failure stalls the heartbeat and the
+                # watchdog bounces the process for a clean restart.
+                print(f"[camera-worker] frame grab failed: {exc!r}", flush=True)
+                time.sleep(0.1)
+                continue
             self.state.set_now()
             # Detection overlays are drawn onto `frame` further down,
             # then we push to MJPEG. While IDLE we push immediately so
@@ -728,6 +802,7 @@ class CameraWorker(threading.Thread):
             wait_deadline = time.time() + 8
             while (not self.tts.wait_idle(timeout=0.05)
                    and time.time() < wait_deadline):
+                self.last_loop_at = time.time()      # watchdog heartbeat
                 self.frames.push(grab_frame(self.cam))
 
             hold_until = time.time() + config.POSE_HOLD_SEC
@@ -742,6 +817,7 @@ class CameraWorker(threading.Thread):
             last_lms = None
 
             while got < want and time.time() < deadline:
+                self.last_loop_at = time.time()      # watchdog heartbeat
                 frame = grab_frame(self.cam)
                 self.frames.push(frame)
                 dets = self.pipe.detect(
@@ -827,6 +903,22 @@ class CameraWorker(threading.Thread):
             ans += f" Humidity is around {humidity}%."
         return ans
 
+    def _project_list_answer(self) -> str | None:
+        """Read out the projects currently on display, straight from the
+        live list (the admin keeps this current). None if the list is
+        empty -- caller then falls through to the LLM."""
+        projects = self.state.snapshot().get("projects") or []
+        titles = [
+            (p.get("title") or "").strip()
+            for p in projects if (p.get("title") or "").strip()
+        ]
+        if not titles:
+            return None
+        if len(titles) == 1:
+            return f"On display today we have {titles[0]}."
+        return ("On display today we have "
+                + ", ".join(titles[:-1]) + f", and {titles[-1]}.")
+
     def _submit_chat(self, emp_id: str, question: str):
         # Capture prior conversation turns BEFORE appending this question,
         # so the LLM sees the context but not a duplicate of the current
@@ -857,6 +949,18 @@ class CameraWorker(threading.Thread):
             ans = self._weather_answer()
             if ans:
                 print(f"[chat] weather intent -> local data: {ans!r}",
+                      flush=True)
+                self._append_chat("assistant", ans)
+                self.greeter.say(ans)
+                self._last_chat_at = time.time()
+                return
+        # Projects on display: answer from the live project list so the
+        # kiosk reads out exactly what's there (no LLM, no hallucinated
+        # extras, instant). Falls through to the LLM if the list is empty.
+        if _is_project_list_query(question):
+            ans = self._project_list_answer()
+            if ans:
+                print(f"[chat] project-list intent -> local data: {ans!r}",
                       flush=True)
                 self._append_chat("assistant", ans)
                 self.greeter.say(ans)
@@ -1041,6 +1145,13 @@ def main():
                           wake_event, idle_event, args, listener=listener)
     worker.start()
 
+    # Watchdog: bounce the process (systemd Restart=always relaunches with
+    # clean camera + NPU state) if the worker thread dies or stalls.
+    _start_watchdog(worker)
+    # Privacy: background retention sweeper (no-op unless DATA_RETENTION_HOURS
+    # is set).
+    _start_purge_sweeper(db)
+
     # Flask app -- callbacks bridge the browser to the worker.
     def request_wake():
         wake_event.set()
@@ -1086,6 +1197,9 @@ def main():
     try:
         app.run(host=host, port=port, threaded=True, use_reloader=False)
     finally:
+        # Signal the watchdog/sweeper to stand down so a clean shutdown
+        # isn't mistaken for a crash.
+        _shutdown.set()
         worker.stop()
         if listener is not None:
             listener.stop()
@@ -1093,6 +1207,54 @@ def main():
         fun_facts.stop()
         chat.shutdown()
         tts.stop()
+
+
+_shutdown = threading.Event()
+
+
+def _start_watchdog(worker: "CameraWorker") -> None:
+    """Monitor the camera worker; on death or stall, exit the process so
+    the systemd unit (Restart=always) relaunches with clean hardware
+    state. A clean restart beats trying to re-acquire leaked camera / NPU
+    handles inside a wedged process."""
+    def watch():
+        while not _shutdown.is_set():
+            _shutdown.wait(config.WATCHDOG_POLL_SEC)
+            if _shutdown.is_set():
+                return
+            if not worker.is_alive():
+                print("[watchdog] camera worker thread is dead -- exiting "
+                      "for restart", flush=True)
+                os._exit(1)
+            stale = time.time() - getattr(worker, "last_loop_at", time.time())
+            if stale > config.WORKER_HEARTBEAT_STALL_SEC:
+                print(f"[watchdog] camera worker stalled {stale:.0f}s -- "
+                      "exiting for restart", flush=True)
+                os._exit(1)
+    threading.Thread(target=watch, daemon=True, name="watchdog").start()
+
+
+def _start_purge_sweeper(db: FaceDB) -> None:
+    """Background privacy sweep: delete face data older than the retention
+    window. No-op unless config.DATA_RETENTION_HOURS > 0."""
+    hours = getattr(config, "DATA_RETENTION_HOURS", 0)
+    if hours <= 0:
+        return
+    interval = max(1, getattr(config, "DATA_PURGE_SWEEP_MIN", 30)) * 60
+
+    def sweep():
+        while not _shutdown.is_set():
+            try:
+                n = db.purge_faces_older_than(hours)
+                if n:
+                    print(f"[privacy] auto-purged {n} face record(s) older "
+                          f"than {hours}h", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[privacy] purge sweep failed: {exc!r}", flush=True)
+            _shutdown.wait(interval)
+    threading.Thread(target=sweep, daemon=True, name="purge-sweeper").start()
+    print(f"[privacy] retention sweeper on: purge faces older than {hours}h "
+          f"every {interval // 60}min", flush=True)
 
 
 def _poll_wake(listener: WakeWordListener, ev: threading.Event):

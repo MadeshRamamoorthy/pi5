@@ -86,10 +86,30 @@ sqlite3 faces.db "DELETE FROM face_embeddings WHERE emp_id='E001';"
 ## Chat budget
 
 Each ACTIVE session is capped at
-`CHAT_MAX_QUESTIONS_PER_SESSION` (default 5). A persistent visitor
-can't run up a bill by camping in front of the kiosk.
+`CHAT_MAX_QUESTIONS_PER_SESSION` (default 25). The cap is a backstop
+against a visitor camping in front of the kiosk running up an API
+bill; it's high enough that a normal conversation never hits it, and
+the countdown badge is hidden in the UI.
 
 Budget resets on every IDLE → ACTIVE transition.
+
+## Data retention & event reset
+
+Registration stores face embeddings + a name in `faces.db`. Two ways
+to clear that biometric data:
+
+- **Manual event reset (default):** in the admin panel's Employees
+  tab, click **Wipe all faces**. This deletes every employee + their
+  embeddings. Hi-5 interaction *counts* are kept (they're anonymous
+  aggregates). Irreversible.
+- **Automatic retention:** set `DATA_RETENTION_HOURS` (env var, default
+  `0` = off). When > 0, a background sweep deletes face data older than
+  that window — e.g. `DATA_RETENTION_HOURS=24` clears a one-day booth's
+  registrations automatically the next day.
+
+The registration overlay shows a consent line ("Your face is stored
+only on this device to recognise you, and is deleted after the event.")
+so visitors know before they register.
 
 ## Audio capture
 

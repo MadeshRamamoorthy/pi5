@@ -137,6 +137,14 @@
   directly, or paste a bio URL and click "Regenerate" to have the LLM
   pull a one-liner from the page.
 </p>
+<div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid #eee;">
+  <button id="wipe-faces-btn" class="danger" type="button">Wipe all faces</button>
+  <span class="sub" style="margin-left: 8px;">
+    Event reset: permanently deletes every registered face. Hi-5 counts
+    are kept. Cannot be undone.
+  </span>
+  <p id="wipe-faces-status" class="sub" style="margin-top: 6px;"></p>
+</div>
 </section>
 
 <!-- Edit-employee modal (also reachable from the Employees tab) -->
@@ -442,6 +450,24 @@ async function delEmp(emp_id) {
               { method: "DELETE" });
   refresh();
 }
+document.getElementById("wipe-faces-btn").addEventListener("click", async () => {
+  const n = (window.__lastEmployees || []).length;
+  if (!confirm(
+    `Permanently delete ALL ${n} registered face(s)?\n\n` +
+    `This wipes every person's face data and name. Hi-5 counts are kept. ` +
+    `This cannot be undone.`)) return;
+  const status = document.getElementById("wipe-faces-status");
+  status.textContent = "Wiping…";
+  try {
+    const r = await fetch("/api/faces/purge", { method: "POST" });
+    if (!r.ok) { status.textContent = `Wipe failed: ${await r.text()}`; return; }
+    const data = await r.json();
+    status.textContent = `Done — removed ${data.deleted} face record(s).`;
+    refresh();
+  } catch (e) {
+    status.textContent = `Wipe failed: ${e}`;
+  }
+});
 function openEmpEdit(emp_id) {
   const emp = (window.__lastEmployees || []).find(e => e.emp_id === emp_id);
   if (!emp) return;

@@ -142,3 +142,12 @@ This makes the file safe to share between the kiosk's silent learner
 Backups: WAL creates a `faces.db-wal` sidecar. Either include both
 files in your backup or run `sqlite3 faces.db "PRAGMA wal_checkpoint(TRUNCATE);"`
 first to merge the WAL back into the main DB.
+
+## Wipe all faces (event reset)
+
+The Employees tab has a **Wipe all faces** button. It deletes every
+registered employee and their face embeddings in one shot (hi-5
+counts are kept). Use it to clear visitor data after an event. It's
+guarded by admin auth and asks for confirmation; the action is
+irreversible. For automatic time-based clearing instead, set the
+`DATA_RETENTION_HOURS` env var on the kiosk (see `docs/privacy.md`).

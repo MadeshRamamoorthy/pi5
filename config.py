@@ -214,6 +214,32 @@ SLEEP_AFTER_NO_LIVE_FACE_SEC = IDLE_AFTER_LAST_INTERACTION_SEC
 # Hard back-stop on any single ACTIVE session.
 ACTIVE_SESSION_MAX_SEC = 600
 
+# ---- Resilience / watchdog ------------------------------------------------
+# The camera worker stamps a heartbeat each loop iteration. A watchdog
+# thread exits the process (so the systemd unit's Restart=always relaunches
+# it with clean camera + NPU state) if the worker thread dies or its
+# heartbeat goes stale. Clean process restart beats trying to re-acquire
+# leaked hardware handles in-process.
+WATCHDOG_POLL_SEC = 5
+# Generous so a long registration (which blocks the main loop while it
+# captures poses) never trips the watchdog. A real hang is far longer.
+WORKER_HEARTBEAT_STALL_SEC = 90
+# How many times to retry opening the camera + Hailo pipeline at startup
+# before giving up and exiting for a systemd restart. Rides out transient
+# boot races (camera not enumerated yet, NPU busy from a prior run).
+WORKER_INIT_RETRIES = 5
+
+# ---- Privacy / biometric data retention -----------------------------------
+# Auto-delete stored face data this many hours after registration. 0 (the
+# default) disables auto-purge -- wipe manually via the admin "Wipe all
+# faces" button after the event. Set e.g. 24 to clear a one-day booth's
+# data automatically the next day. Interaction *counts* are always kept;
+# only the biometric embeddings + names are removed.
+DATA_RETENTION_HOURS = int(os.environ.get("DATA_RETENTION_HOURS", "0"))
+# How often the retention sweeper runs (minutes). Ignored when retention
+# is disabled.
+DATA_PURGE_SWEEP_MIN = 30
+
 # ---- Idle / Active screen layout -----------------------------------------
 # Welcome banner colours, BGR triplets.
 THEME = {

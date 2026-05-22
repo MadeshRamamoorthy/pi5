@@ -164,6 +164,24 @@ The kiosk SPA uses emoji in headers (👋, 🌡️, 💧). Without
 `start.sh` tries `chromium-browser`, `chromium`, `google-chrome`,
 `firefox` in order — first one found wins.
 
+## 7. Auto-restart (optional but recommended)
+
+For an unattended kiosk, install the systemd unit so the OS relaunches
+everything if it crashes or the in-app watchdog bounces a wedged camera
+worker:
+
+```bash
+# Edit the User=/paths in systemd/echo-scope.service to match your install
+sudo cp systemd/echo-scope.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now echo-scope.service
+journalctl -u echo-scope -f      # live logs
+```
+
+The watchdog exits the process on a dead/stalled camera worker; with
+`Restart=always` systemd brings it back with clean camera + NPU state,
+and the browser SPA reconnects on its own.
+
 ---
 
 Once everything above is done, head to [Quickstart](quickstart.md).

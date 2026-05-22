@@ -188,6 +188,15 @@ def create_admin_app(
         db.set_employee_profile(emp_id, **update)
         return ("", 204)
 
+    @app.route("/api/faces/purge", methods=["POST"])
+    def faces_purge():
+        """Event reset: wipe ALL registered faces (employees + their
+        embeddings). Interaction counts are kept. Irreversible."""
+        if not check_admin_auth():
+            return request_admin_auth()
+        deleted = db.purge_all_faces()
+        return jsonify({"ok": True, "deleted": deleted})
+
     @app.route("/api/employees/<emp_id>/welcome", methods=["POST", "DELETE"])
     def emp_regen_welcome(emp_id):
         """POST   : re-fetch profile_url and regenerate welcome cache.

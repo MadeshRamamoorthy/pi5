@@ -1,0 +1,39 @@
+# ECHO SCOPE kiosk -- systemd unit (process-level restart backstop).
+#
+# The kiosk's in-app watchdog exits the process if the camera worker dies
+# or stalls; start.sh exits if either the backend or the browser dies.
+# With Restart=always, systemd then relaunches the whole kiosk with clean
+# camera + NPU state. The browser SPA reconnects to the backend on its own.
+#
+# Install (on the Pi):
+#   1. Edit User=, WorkingDirectory=, ExecStart= and the DISPLAY/XAUTHORITY
+#      paths below to match your install (the default project dir baked
+#      into start.sh is /home/echo/Documents/code/pi5).
+#   2. sudo cp systemd/echo-scope.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now echo-scope.service
+#
+# Handy:
+#   systemctl status echo-scope     -- is it up?
+#   journalctl -u echo-scope -f     -- live logs
+#   systemctl restart echo-scope    -- manual restart
+#   systemctl stop echo-scope       -- stop (will NOT auto-restart)
+
+[Unit]
+Description=ECHO SCOPE face-recognition kiosk
+After=graphical.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=echo
+# The kiosk launches Chromium, so it needs the desktop session's display.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/echo/.Xauthority
+WorkingDirectory=/home/echo/Documents/code/pi5
+ExecStart=/home/echo/Documents/code/pi5/start.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target

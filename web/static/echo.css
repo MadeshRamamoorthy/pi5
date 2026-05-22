@@ -649,6 +649,12 @@ body[data-chat-mode="true"] .toast { display: none !important; }
   font-size: 15px;
   margin: 4px 0 0;
 }
+.register-consent {
+  font-size: 12px !important;
+  opacity: 0.7;
+  margin-top: 8px !important;
+  line-height: 1.4;
+}
 .overlay-card label {
   display: block;
   margin: 14px 0 0;
