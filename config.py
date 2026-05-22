@@ -373,9 +373,17 @@ WHISPER_COMPUTE_TYPE = "int8"       # 8-bit quantisation for memory.
 WHISPER_CACHE_DIR = MODELS_DIR / "whisper"
 # Voice capture timing knobs.
 CHAT_VOICE_MAX_SEC = 12.0           # hard cap on a single utterance.
-CHAT_VOICE_SILENCE_SEC = 0.9        # auto-finalise after this much silence.
-CHAT_VOICE_SILENCE_RMS = 350        # int16 RMS threshold below which audio
-                                    # counts as silence.
+CHAT_VOICE_SILENCE_SEC = 0.6        # auto-finalise after this much silence.
+CHAT_VOICE_SILENCE_RMS = 600        # int16 RMS threshold below which audio
+                                    # counts as silence. Raised from 350 --
+                                    # the PowerConf picks up enough ambient
+                                    # room noise to sit above 350, so the VAD
+                                    # never saw "silence" and recordings ran
+                                    # 8+ s. 600 treats normal room tone as
+                                    # silence so the cutoff fires ~0.6 s after
+                                    # the user stops talking. Lower it if the
+                                    # VAD starts cutting people off mid-word.
+CHAT_VOICE_DEBUG_RMS = os.environ.get("CHAT_VOICE_DEBUG_RMS", "0") == "1"
 
 # ---- Silent learning ------------------------------------------------------
 # When a confidently recognised face passes the quality + liveness gates,

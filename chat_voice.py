@@ -196,6 +196,10 @@ class ChatVoiceCapture:
                 if arr.size == 0:
                     continue
                 rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
+                if getattr(config, "CHAT_VOICE_DEBUG_RMS", False):
+                    print(f"[chat-voice] rms={rms:.0f} "
+                           f"(silence threshold {config.CHAT_VOICE_SILENCE_RMS}, "
+                           f"silence_run={silence_run:.2f}s)", flush=True)
                 if rms >= config.CHAT_VOICE_SILENCE_RMS:
                     had_voice = True
                     silence_run = 0.0
