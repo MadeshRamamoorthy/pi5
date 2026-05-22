@@ -751,6 +751,10 @@ class CameraWorker(threading.Thread):
     # ---- chat ---------------------------------------------------------
 
     def _submit_chat(self, emp_id: str, question: str):
+        # Capture prior conversation turns BEFORE appending this question,
+        # so the LLM sees the context but not a duplicate of the current
+        # turn. chat.submit() trims to CHAT_HISTORY_TURNS.
+        prior_history = list(self.state.snapshot().get("chat_history") or [])
         self._append_chat("user", question)
         # Local-only goodbye detection -- no LLM call. Catches "bye",
         # "thanks bye", "i'm done", etc. (see config.CHAT_GOODBYE_TOKENS).
@@ -781,7 +785,8 @@ class CameraWorker(threading.Thread):
         print(f"[chat] submit ({self.chat.status()}): {snip!r}", flush=True)
         self._last_chat_at = time.time()
         self._chat_submitted_at = time.time()
-        self._chat_future = self.chat.submit(emp_id, question)
+        self._chat_future = self.chat.submit(emp_id, question,
+                                             history=prior_history)
 
     def _append_chat(self, role: str, text: str):
         snap = self.state.snapshot()

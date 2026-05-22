@@ -62,9 +62,11 @@ def build_system_prompt(db=None) -> str:
             lines.append(f"  - {title}" + (f": {desc}" if desc else ""))
         if lines:
             parts.append(
-                "Projects on display today (read these out if the user "
-                "asks 'what's on display' / 'projects' / 'what can I see "
-                "today'):\n" + "\n".join(lines)
+                "PROJECTS ON DISPLAY TODAY. When the user asks what "
+                "projects / AI files / demos are available, on display, "
+                "or what they can see today, list these by name -- and "
+                "ONLY these. Do not invent or add any projects that "
+                "aren't in this list:\n" + "\n".join(lines)
             )
     if session_row:
         sid, title, starts_at, ends_at, notes = session_row
@@ -149,19 +151,49 @@ class OpenAIBackend(_Backend):
         except OSError:
             return False
 
-    def complete(self, question: str, system: str) -> str:
+    def complete(self, question: str, system: str, history=None) -> str:
         if self._client is None:
             from openai import OpenAI
             self._client = OpenAI(api_key=self.api_key)
+        history = history or []
+        if getattr(config, "CHAT_WEB_SEARCH", False):
+            text = self._complete_websearch(system, history, question)
+            if text:
+                return text
+            # web_search unavailable / empty -> fall through to plain chat
+        return self._complete_chat(system, history, question)
+
+    def _messages(self, system, history, question):
+        msgs = [{"role": "system", "content": system}]
+        for role, text in history:
+            if role in ("user", "assistant") and text:
+                msgs.append({"role": role, "content": text})
+        msgs.append({"role": "user", "content": question})
+        return msgs
+
+    def _complete_chat(self, system, history, question) -> str:
         resp = self._client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": question},
-            ],
-            max_tokens=200,
+            messages=self._messages(system, history, question),
+            max_tokens=getattr(config, "CHAT_MAX_REPLY_TOKENS", 300),
         )
         return resp.choices[0].message.content.strip()
+
+    def _complete_websearch(self, system, history, question) -> str:
+        """Use the Responses API with the web_search tool so the model
+        can pull current info. Returns '' if the API/tool isn't
+        available (caller then falls back to plain chat)."""
+        try:
+            resp = self._client.responses.create(
+                model=self.model,
+                tools=[{"type": "web_search_preview"}],
+                input=self._messages(system, history, question),
+                max_output_tokens=getattr(config, "CHAT_MAX_REPLY_TOKENS", 300),
+            )
+            return (getattr(resp, "output_text", "") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[chat] web_search unavailable, falling back: {exc!r}")
+            return ""
 
 
 class OllamaBackend(_Backend):
@@ -188,15 +220,27 @@ class OllamaBackend(_Backend):
         except OSError:
             return False
 
-    def complete(self, question: str, system: str) -> str:
+    def complete(self, question: str, system: str, history=None) -> str:
+        # Fold recent turns into the prompt so the local model has some
+        # conversational context too. Ollama /api/generate is single-turn,
+        # so we inline the history as plain text.
+        history = history or []
+        if history:
+            convo = "\n".join(
+                f"{'User' if role == 'user' else 'Assistant'}: {text}"
+                for role, text in history if role in ("user", "assistant") and text
+            )
+            prompt = f"{convo}\nUser: {question}"
+        else:
+            prompt = question
         r = requests.post(
             f"{self.url}/api/generate",
             json={
                 "model": self.model,
-                "prompt": question,
+                "prompt": prompt,
                 "system": system,
                 "stream": False,
-                "options": {"num_predict": 200},
+                "options": {"num_predict": getattr(config, "CHAT_MAX_REPLY_TOKENS", 300)},
             },
             timeout=60,
         )
@@ -267,13 +311,21 @@ class ChatClient:
         return (b.label if b
                 else "Chat is taking a quick break — back online shortly.")
 
-    def submit(self, emp_id: str, question: str
+    def submit(self, emp_id: str, question: str, history=None
                ) -> "concurrent.futures.Future[str]":
-        return self._executor.submit(self._ask_blocking, emp_id, question)
+        # Trim to the most recent N turns so token cost stays bounded.
+        turns = getattr(config, "CHAT_HISTORY_TURNS", 0)
+        if history and turns > 0:
+            history = list(history)[-turns:]
+        else:
+            history = []
+        return self._executor.submit(
+            self._ask_blocking, emp_id, question, history,
+        )
 
     # internal -----------------------------------------------------------
 
-    def _ask_blocking(self, emp_id: str, question: str) -> str:
+    def _ask_blocking(self, emp_id: str, question: str, history=None) -> str:
         backend = self.pick_backend()
         if backend is None:
             raise ChatBackendError("No chat backend reachable.")
@@ -282,7 +334,7 @@ class ChatClient:
         self.budget.consume(emp_id)
         system = build_system_prompt(self.db)
         try:
-            answer = backend.complete(question, system)
+            answer = backend.complete(question, system, history=history)
         except Exception as exc:  # roll back budget on error
             self.budget._used[emp_id] = max(0, self.budget._used.get(emp_id, 1) - 1)
             raise ChatBackendError(f"{backend.label}: {exc}") from exc

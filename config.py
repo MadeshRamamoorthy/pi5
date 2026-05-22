@@ -246,6 +246,24 @@ OLLAMA_MODEL = "qwen3:1.7b"       # qwen3 instruct on Hailo-Ollama; bigger
 # Backend probe order. First available wins. Set to ("ollama", "openai")
 # if you want to prefer the local model.
 CHAT_BACKEND_ORDER = ("openai", "ollama")
+
+# Web search: route OpenAI chat through the Responses API with the
+# web_search tool so answers can include current / real-time info
+# instead of only the model's training-cutoff knowledge. Adds ~3-6 s
+# latency per question. Falls back to a plain chat.completions call if
+# the Responses API or the tool isn't available on the installed SDK.
+# Only affects the OpenAI backend; Ollama (offline) ignores it.
+CHAT_WEB_SEARCH = os.environ.get("CHAT_WEB_SEARCH", "true").lower() in (
+    "1", "true", "yes",
+)
+
+# How many prior conversation turns (user+assistant messages) to send
+# with each question so follow-ups have context. 0 = stateless one-shot.
+# Each turn adds tokens; 6 (= 3 exchanges) is a good balance for a kiosk.
+CHAT_HISTORY_TURNS = 6
+
+# Max tokens in a chat reply. Kiosk answers should be short + spoken.
+CHAT_MAX_REPLY_TOKENS = 300
 CHAT_MAX_QUESTIONS_PER_SESSION = 5
 CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 
