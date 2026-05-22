@@ -577,26 +577,37 @@ class CameraWorker(threading.Thread):
                 fut = getattr(self, "_chat_future", None)
                 if fut is not None and fut.done():
                     self._chat_future = None
-                    try:
-                        answer = fut.result()
-                    except ChatBudgetError as exc:
-                        answer = str(exc)
-                    except ChatBackendError as exc:
-                        answer = ("I'm having a little trouble reaching the "
-                                  f"chat service right now ({exc}).")
-                    except Exception as exc:  # noqa: BLE001
-                        answer = f"Hmm, something went sideways: {exc}"
-                    chat_ms = (time.time() -
-                               getattr(self, "_chat_submitted_at", time.time())
-                               ) * 1000
-                    snip = (answer[:60] + "...") if len(answer) > 63 else answer
-                    print(f"[chat] reply in {chat_ms:.0f}ms: {snip!r}",
-                          flush=True)
-                    self.state.update(chat_pending=False)
-                    self._append_chat("assistant", answer)
-                    self.greeter.say(answer)
-                    self._last_chat_at = time.time()
-                    last_interaction_at = time.time()
+                    # If the user already moved on -- recording a new
+                    # question (listening) or tapped to listen again --
+                    # the previous answer is stale. Web search can take
+                    # 3-6 s, long enough that a late answer would speak
+                    # over the user's next question. Discard it. Fresh
+                    # snapshot so a mic-tap milliseconds ago is caught.
+                    if self.state.snapshot().get("listening"):
+                        print("[chat] discarding stale answer "
+                               "(user is asking again)", flush=True)
+                        self.state.update(chat_pending=False)
+                    else:
+                        try:
+                            answer = fut.result()
+                        except ChatBudgetError as exc:
+                            answer = str(exc)
+                        except ChatBackendError as exc:
+                            answer = ("I'm having a little trouble reaching the "
+                                      f"chat service right now ({exc}).")
+                        except Exception as exc:  # noqa: BLE001
+                            answer = f"Hmm, something went sideways: {exc}"
+                        chat_ms = (time.time() -
+                                   getattr(self, "_chat_submitted_at", time.time())
+                                   ) * 1000
+                        snip = (answer[:60] + "...") if len(answer) > 63 else answer
+                        print(f"[chat] reply in {chat_ms:.0f}ms: {snip!r}",
+                              flush=True)
+                        self.state.update(chat_pending=False)
+                        self._append_chat("assistant", answer)
+                        self.greeter.say(answer)
+                        self._last_chat_at = time.time()
+                        last_interaction_at = time.time()
 
     # ---- registration flow (driven by /api/register) -----------------
 

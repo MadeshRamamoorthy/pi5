@@ -263,7 +263,9 @@ CHAT_WEB_SEARCH = os.environ.get("CHAT_WEB_SEARCH", "true").lower() in (
 CHAT_HISTORY_TURNS = 6
 
 # Max tokens in a chat reply. Kiosk answers should be short + spoken.
-CHAT_MAX_REPLY_TOKENS = 300
+# ~150 tokens ~= 3-4 short sentences -- a hard ceiling so web-search
+# answers can't run long even if the model wants to ramble.
+CHAT_MAX_REPLY_TOKENS = 150
 CHAT_MAX_QUESTIONS_PER_SESSION = 5
 CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 
