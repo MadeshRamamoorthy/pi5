@@ -72,19 +72,20 @@ UNKNOWN_FRAMES_BEFORE_REGISTER = 15
 # previous capture). The shift is checked in normalised units of the inter-eye
 # distance, so it works at any range. Use None for the first/calibration pose.
 #   ("right",  +x shift in image)   ("left", -x)   ("up", -y)   ("down", +y)
+# Three poses (frontal + two head turns) give enough angle coverage for
+# reliable recognition while keeping registration quick (~10-12 s total).
+# Add the tilt-up / tilt-down lines back if you want denser coverage.
 POSE_PROMPTS = [
     ("Look straight at the camera.",   None),
-    ("Slowly shift to your right.",   "right"),
-    ("Now shift to your left.",       "left"),
-    ("Tilt your head up.",            "up"),
-    ("Tilt your head down.",          "down"),
+    ("Slowly turn a little to your right.", "right"),
+    ("Now turn a little to your left.",     "left"),
 ]
 
-POSE_HOLD_SEC = 1.5            # min time after prompt before we even *try* to capture
-POSE_STABLE_SEC = 0.5          # face landmarks must stay still for this long before capture
+POSE_HOLD_SEC = 1.0            # min time after prompt before we even *try* to capture
+POSE_STABLE_SEC = 0.4          # face landmarks must stay still for this long before capture
 POSE_STABLE_PIXEL_TOL = 4.0    # max landmark drift (px) within the stability window
 POSE_MIN_SHIFT = 0.25          # min directional shift, in eye-distance units
-POSE_CAPTURE_TIMEOUT_SEC = 8.0 # give up on this pose if user doesn't comply
+POSE_CAPTURE_TIMEOUT_SEC = 7.0 # give up on this pose if user doesn't comply
 
 # Re-register: the new face must self-match this strongly to count as the
 # same person before we append samples to an existing emp_id.
