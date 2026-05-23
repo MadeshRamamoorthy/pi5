@@ -309,6 +309,23 @@ CHAT_MAX_REPLY_TOKENS = 150
 CHAT_MAX_QUESTIONS_PER_SESSION = 25
 CHAT_VOICE_MODE_DEFAULT = "voice"   # "voice" or "keyboard"
 
+# ---- AI Lab sessions (answered in chat) -----------------------------------
+# When a visitor asks about AI Lab sessions, ECHO answers from these lists
+# locally (no LLM). Edit to keep current. Completed sessions are names only;
+# planned sessions carry a human-readable date string. This is separate from
+# the `sessions` DB table (which drives the dashboard's dated "Upcoming
+# Session" card) -- this list also covers already-completed sessions.
+AI_LAB_SESSIONS_COMPLETED = [
+    "Basics of AI Application",
+    "Prompt Engineering",
+    "Build a RAG-based Chatbot",
+    "MCP Servers",
+]
+AI_LAB_SESSIONS_PLANNED = [
+    ("Build MCP Servers (hands-on)", "May 29th"),
+    ("Agentic AI", "June 5th"),
+]
+
 # ---- Chat-voice ASR -------------------------------------------------------
 # Wake-word listener stays on the small Vosk model. Long-form chat
 # dictation goes through this separate backend, lazy-loaded so the

@@ -210,6 +210,17 @@ def _is_solution_list_query(text: str) -> bool:
     ))
 
 
+def _is_lab_session_query(text: str) -> bool:
+    """Asking about AI Lab sessions (completed or planned)."""
+    t = (text or "").lower()
+    return any(p in t for p in (
+        "session", "sessions", "workshop", "workshops", "ai lab",
+        "lab session", "in the lab", "coming up", "upcoming", "agenda",
+        "what's next", "whats next", "next event", "schedule",
+        "training session",
+    ))
+
+
 def _is_solution_query(text: str) -> bool:
     """Is the visitor asking whether we have a solution/tool for some need?
     Broad on purpose -- when nothing matches the catalog we fall back to
@@ -959,6 +970,48 @@ class CameraWorker(threading.Thread):
         return ("On display today we have "
                 + ", ".join(titles[:-1]) + f", and {titles[-1]}.")
 
+    def _lab_session_answer(self, question: str) -> str | None:
+        """Answer AI Lab session questions from config. Adapts to whether
+        the visitor asked about completed, planned, or all sessions."""
+        completed = list(getattr(config, "AI_LAB_SESSIONS_COMPLETED", []) or [])
+        planned = list(getattr(config, "AI_LAB_SESSIONS_PLANNED", []) or [])
+        if not completed and not planned:
+            return None
+
+        def _join(items):
+            items = [i for i in items if i]
+            if not items:
+                return ""
+            if len(items) == 1:
+                return items[0]
+            return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+        completed_str = _join(completed)
+        planned_str = _join([
+            f"{title} on {when}" if when else title for title, when in planned
+        ])
+
+        t = (question or "").lower()
+        wants_completed = any(w in t for w in (
+            "complete", "done", "finish", "past", "already", "previous",
+            "so far", "covered",
+        ))
+        wants_planned = any(w in t for w in (
+            "upcoming", "planned", "next", "coming", "scheduled", "future",
+            "plan",
+        ))
+        if wants_planned and not wants_completed and planned_str:
+            return f"Coming up in the AI Lab: {planned_str}."
+        if wants_completed and not wants_planned and completed_str:
+            return f"In the AI Lab we've already covered {completed_str}."
+        segs = []
+        if completed_str:
+            segs.append(f"In the AI Lab we've completed sessions on "
+                        f"{completed_str}.")
+        if planned_str:
+            segs.append(f"Coming up next: {planned_str}.")
+        return " ".join(segs) or None
+
     def _solutions_summary(self) -> str | None:
         """List the catalog names for "what tools/solutions were
         developed?". Names only (descriptions would be far too long to read
@@ -1031,6 +1084,15 @@ class CameraWorker(threading.Thread):
             if ans:
                 print(f"[chat] weather intent -> local data: {ans!r}",
                       flush=True)
+                self._append_chat("assistant", ans)
+                self.greeter.say(ans)
+                self._last_chat_at = time.time()
+                return
+        # AI Lab sessions: completed + planned, answered from config.
+        if _is_lab_session_query(question):
+            ans = self._lab_session_answer(question)
+            if ans:
+                print(f"[chat] lab-session intent -> {ans!r}", flush=True)
                 self._append_chat("assistant", ans)
                 self.greeter.say(ans)
                 self._last_chat_at = time.time()
