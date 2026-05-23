@@ -239,28 +239,6 @@ def _classify_topic(text: str):
     return None
 
 
-def _is_solution_list_query(text: str) -> bool:
-    """Within the 'solution' topic: a general "list them all" question
-    (answered by listing catalog names) vs a specific "do you have one for
-    X?" (answered by a single best match)."""
-    t = (text or "").lower()
-    return any(p in t for p in (
-        "what solutions", "which solutions", "list of solutions",
-        "list the solutions", "all solutions", "all the solutions",
-        "solutions you have", "solutions you've", "solutions have you",
-        "solutions developed", "solutions you developed", "solutions were",
-        "what tools", "which tools", "list of tools", "list the tools",
-        "all tools", "all the tools", "tools developed", "tools you developed",
-        "tools were", "tools you have", "tools have you",
-        "what apps", "which apps", "what platforms", "which platforms",
-        "what products", "which products",
-        "what have you built", "what have you developed",
-        "what did you build", "what did you develop",
-        "what was built", "what was developed", "what were built",
-        "what were developed", "what have you created", "what was created",
-    ))
-
-
 # ---------- silent learning -----------------------------------------------
 
 
@@ -422,6 +400,10 @@ class CameraWorker(threading.Thread):
         # don't re-pop the overlay for this long. Otherwise the unknown-
         # face streak would re-open it immediately.
         self._register_declined_at = 0.0
+        # Set when the session should end with a spoken sign-off (explicit
+        # "bye", or a chat that went quiet) -- the IDLE transition then lets
+        # the goodbye finish playing instead of cutting it off.
+        self._goodbye_exit = False
         # The first person greeted in an ACTIVE session "owns" it. We
         # won't greet anyone else until the session ends, so a colleague
         # who wanders into frame mid-conversation doesn't get called out
@@ -530,6 +512,8 @@ class CameraWorker(threading.Thread):
                 seen_in_session = set()
                 session_id = uuid.uuid4().hex[:12]
                 self._session_primary = None
+                self._goodbye_exit = False
+                self._last_chat_at = 0.0
                 self.greeter.reset_last()
                 self.liveness.reset()
                 self.chat.budget.reset()
@@ -744,26 +728,58 @@ class CameraWorker(threading.Thread):
                     last_interaction_at = time.time()
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
                 force_idle = self.idle_event.is_set()
-                if (force_idle
+
+                # A chat that's gone quiet for CHAT_IDLE_GOODBYE_SEC gets a
+                # friendly spoken sign-off (by name) before we exit, so the
+                # next person starts a fresh conversation. The X button
+                # (force_idle) still exits instantly with no goodbye.
+                since_chat = ((time.time() - self._last_chat_at)
+                              if getattr(self, "_last_chat_at", 0) else 1e9)
+                if (not force_idle and not self._goodbye_exit
+                        and bool(snap.get("chat_history"))
+                        and not snap.get("chat_pending")
+                        and not snap.get("listening")
+                        and since_chat >= config.CHAT_IDLE_GOODBYE_SEC):
+                    name = (snap.get("person") or {}).get("name") or ""
+                    farewell = (
+                        f"Thanks for chatting, {name}! Come say hello again "
+                        "anytime." if name else
+                        "Thanks for chatting! Come say hello again anytime."
+                    )
+                    self._append_chat("assistant", farewell)
+                    self.greeter.say(farewell)
+                    self._goodbye_exit = True
+
+                if (force_idle or self._goodbye_exit
                         or idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
                         or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)):
                     if force_idle:
                         self.idle_event.clear()
+                    # Graceful exit lets the sign-off finish playing; the X
+                    # button still cuts audio instantly.
+                    graceful = self._goodbye_exit and not force_idle
+                    self._goodbye_exit = False
                     kiosk_state = "IDLE"
                     self.liveness.reset()
                     self.greeter.reset_last()
-                    # Kill in-flight TTS too -- once we're on the dashboard
-                    # the kiosk shouldn't keep talking about the previous
-                    # session. interrupt() = backend.stop() + flush(); flush
-                    # alone would only drop the queue and let the current
-                    # utterance finish playing.
-                    self.tts.interrupt()
+                    self._last_chat_at = 0.0
+                    if graceful:
+                        # Let the farewell play out, then drop any queue
+                        # (interrupting would cut it off mid-word).
+                        self.tts.wait_idle(timeout=8)
+                        self.tts.flush()
+                    else:
+                        # Kill in-flight TTS -- on the dashboard the kiosk
+                        # shouldn't keep talking about the previous session.
+                        self.tts.interrupt()
                     self.state.go_idle()
                     # Resume the wake-word listener -- the user is gone,
                     # we need to be listening for the next "hello echo".
                     if self.listener is not None:
                         self.listener.resume()
-                    reason = "user closed" if force_idle else f"idle {idle_for:.0f}s"
+                    reason = ("user closed" if force_idle
+                              else "chat idle goodbye" if graceful
+                              else f"idle {idle_for:.0f}s")
                     print(f"[state] ACTIVE -> IDLE ({reason}, "
                           f"interactions={len(seen_in_session)})")
 
@@ -1044,46 +1060,31 @@ class CameraWorker(threading.Thread):
             segs.append(f"Coming up next: {planned_str}.")
         return " ".join(segs) or None
 
-    def _solutions_summary(self) -> str | None:
-        """List the catalog names for "what tools/solutions were
-        developed?". Names only (descriptions would be far too long to read
-        out); the visitor can then ask about any one for details."""
+    def _solution_topic_answer(self, question: str) -> str:
+        """Answer any tools/solutions question. Match first: if the question
+        names a specific need ("a tool for container security") it returns
+        that solution's summary. Otherwise -- a general question ("what tools
+        were developed", "solutions we build", "tools in the AI lab") -- it
+        lists all the solutions. Always returns something (never the LLM)."""
         rows = self.db.list_solutions()
         if not rows:
-            return None
-        names = [(r[1] or "").strip() for r in rows if (r[1] or "").strip()]
-        if not names:
-            return None
-        if len(names) == 1:
-            listing = names[0]
-        else:
-            listing = ", ".join(names[:-1]) + f", and {names[-1]}"
-        return (f"We've built {len(names)} solutions: {listing}. Ask me about "
-                "any one of them and I'll tell you what it does.")
-
-    def _solution_answer(self, question: str) -> str | None:
-        """Match the question against the solutions catalog. Returns a
-        spoken answer for a confident match; a catalog-bounded "no match"
-        line when the user explicitly said "solution" but nothing fits;
-        otherwise None so the caller falls back to the LLM."""
-        rows = self.db.list_solutions()
-        if not rows:
-            return None
+            return "Our solutions list isn't loaded yet -- please check back soon."
         matches = solutions_match.match_solutions(question, rows)
         if solutions_match.is_confident(matches):
-            _score, row = matches[0]
+            row = matches[0][1]
             name, desc = row[1], row[2]
             ans = f"Yes -- we've built {name}."
             summary = solutions_match.summarize(desc)
             if summary:
                 ans += f" {summary}"
             return ans
-        if "solution" in (question or "").lower():
-            return ("I don't have a specific solution matching that yet, but "
-                    "we've built tools across cloud operations, migration, "
-                    "security, FinOps, and app development. Ask about one of "
-                    "those and I'll point you to it.")
-        return None
+        # General question -> list every solution by name.
+        names = [(r[1] or "").strip() for r in rows if (r[1] or "").strip()]
+        listing = (names[0] if len(names) == 1
+                   else ", ".join(names[:-1]) + f", and {names[-1]}")
+        return (f"We've built {len(names)} solutions: {listing}. Ask me about "
+                "any one of them, or whether we have something for a specific "
+                "need.")
 
     def _submit_chat(self, emp_id: str, question: str):
         # Capture prior conversation turns BEFORE appending this question,
@@ -1102,10 +1103,10 @@ class CameraWorker(threading.Thread):
             self._append_chat("assistant", farewell)
             self.greeter.say(farewell)
             self._last_chat_at = time.time()
-            # Trigger the same IDLE transition as the X button. The
-            # camera worker reads idle_event each loop iteration and
-            # handles the rest (tts.interrupt, listener.resume, etc).
-            self.idle_event.set()
+            # Graceful exit: the IDLE transition waits for this farewell to
+            # finish playing, then drops to the dashboard. (Using the X-button
+            # idle_event path would interrupt the farewell mid-word.)
+            self._goodbye_exit = True
             return
         # Local weather: answer current-conditions questions straight from
         # the weather poller (no LLM, no web search, no budget slot). One
@@ -1145,15 +1146,7 @@ class CameraWorker(threading.Thread):
                 ans = (self._project_list_answer()
                        or "There's nothing on display today just yet.")
             else:   # "solution"
-                if _is_solution_list_query(question):
-                    ans = (self._solutions_summary()
-                           or "Our solutions list isn't loaded yet -- please "
-                              "check back soon.")
-                else:
-                    ans = (self._solution_answer(question)
-                           or "I couldn't find a matching solution in our "
-                              "catalog. Ask me to list the solutions we've "
-                              "built and I'll run through them.")
+                ans = self._solution_topic_answer(question)
             print(f"[chat] {topic} intent -> {ans!r}", flush=True)
             self._append_chat("assistant", ans)
             self.greeter.say(ans)

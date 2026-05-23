@@ -174,6 +174,10 @@ IDLE_AFTER_LAST_INTERACTION_SEC = 30
 # least this long after the last chat message. Gives the user time to
 # read the answer and ask a follow-up without the kiosk dropping out.
 CHAT_KEEPALIVE_SEC = 180
+# After a chat conversation goes quiet for this long, the kiosk speaks a
+# friendly sign-off (by name) and returns to the dashboard, ready for the
+# next person to start fresh.
+CHAT_IDLE_GOODBYE_SEC = 30
 
 # Phrases that end the chat session without calling the LLM. Matched
 # against the bottom of the transcribed user utterance (case-insensitive,
