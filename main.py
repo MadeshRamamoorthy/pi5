@@ -36,6 +36,7 @@ from hailo_infer import HailoFacePipeline, align_face
 from liveness import LivenessChecker
 from quality import (is_quality_face, landmark_anchor, landmarks_drift,
                      shift_matches_direction)
+import solutions as solutions_match
 from state import StateBus
 from tts import make_backend
 from wake_word import WakeWordError, WakeWordListener
@@ -181,6 +182,35 @@ def _is_project_list_query(text: str) -> bool:
         "what's on display", "whats on display", "what is on display",
         "what can i see", "what can we see",
         "list the project", "show me the project",
+    ))
+
+
+def _is_solution_list_query(text: str) -> bool:
+    """General "what solutions have you built?" -- answered with a count +
+    domains summary rather than a single match (there are too many to read
+    out)."""
+    t = (text or "").lower()
+    return any(p in t for p in (
+        "what solutions", "which solutions", "list of solutions",
+        "list the solutions", "all solutions", "solutions you have",
+        "solutions you've", "solutions have you", "solutions developed",
+        "solutions you developed", "what have you built",
+        "what have you developed", "what did you build",
+        "what tools do you", "what have you created",
+    ))
+
+
+def _is_solution_query(text: str) -> bool:
+    """Is the visitor asking whether we have a solution/tool for some need?
+    Broad on purpose -- when nothing matches the catalog we fall back to
+    the LLM, so a false positive is harmless."""
+    t = (text or "").lower()
+    return any(p in t for p in (
+        "solution", "do you have", "do we have", "is there a tool",
+        "is there a platform", "is there an app", "any tool", "any platform",
+        "anything for", "tool for", "platform for", "app for", "product for",
+        "have you built", "have you developed", "did you build",
+        "did you develop", "looking for a", "something for",
     ))
 
 
@@ -919,6 +949,45 @@ class CameraWorker(threading.Thread):
         return ("On display today we have "
                 + ", ".join(titles[:-1]) + f", and {titles[-1]}.")
 
+    def _solutions_summary(self) -> str | None:
+        """Count + domains overview for "what solutions have you built?"."""
+        rows = self.db.list_solutions()
+        if not rows:
+            return None
+        domains = []
+        for r in rows:
+            d = (r[3] or "").strip()
+            if d and d.lower() not in (x.lower() for x in domains):
+                domains.append(d)
+        area = ", ".join(domains[:6]) if domains else "several areas"
+        return (f"We've built {len(rows)} AI solutions across {area}. Ask me "
+                "about a specific need -- like 'do you have something for "
+                "container security?' -- and I'll point you to the right one.")
+
+    def _solution_answer(self, question: str) -> str | None:
+        """Match the question against the solutions catalog. Returns a
+        spoken answer for a confident match; a catalog-bounded "no match"
+        line when the user explicitly said "solution" but nothing fits;
+        otherwise None so the caller falls back to the LLM."""
+        rows = self.db.list_solutions()
+        if not rows:
+            return None
+        matches = solutions_match.match_solutions(question, rows)
+        if solutions_match.is_confident(matches):
+            _score, row = matches[0]
+            name, desc = row[1], row[2]
+            ans = f"Yes -- we've built {name}."
+            summary = solutions_match.summarize(desc)
+            if summary:
+                ans += f" {summary}"
+            return ans
+        if "solution" in (question or "").lower():
+            return ("I don't have a specific solution matching that yet, but "
+                    "we've built tools across cloud operations, migration, "
+                    "security, FinOps, and app development. Ask about one of "
+                    "those and I'll point you to it.")
+        return None
+
     def _submit_chat(self, emp_id: str, question: str):
         # Capture prior conversation turns BEFORE appending this question,
         # so the LLM sees the context but not a duplicate of the current
@@ -961,6 +1030,27 @@ class CameraWorker(threading.Thread):
             ans = self._project_list_answer()
             if ans:
                 print(f"[chat] project-list intent -> local data: {ans!r}",
+                      flush=True)
+                self._append_chat("assistant", ans)
+                self.greeter.say(ans)
+                self._last_chat_at = time.time()
+                return
+        # Solutions catalog: "what solutions have you built?" -> summary;
+        # "do you have something for X?" -> best catalog match. Searched
+        # locally (no LLM); falls through to the LLM only when intent is
+        # vague and nothing matches.
+        if _is_solution_list_query(question):
+            ans = self._solutions_summary()
+            if ans:
+                print(f"[chat] solution-list intent -> {ans!r}", flush=True)
+                self._append_chat("assistant", ans)
+                self.greeter.say(ans)
+                self._last_chat_at = time.time()
+                return
+        if _is_solution_query(question):
+            ans = self._solution_answer(question)
+            if ans:
+                print(f"[chat] solution intent -> local match: {ans!r}",
                       flush=True)
                 self._append_chat("assistant", ans)
                 self.greeter.say(ans)

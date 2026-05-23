@@ -54,6 +54,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_starts ON sessions(starts_at);
+
+CREATE TABLE IF NOT EXISTS solutions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    description TEXT,
+    domain      TEXT,
+    link        TEXT,
+    ordering    INTEGER DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -311,6 +321,33 @@ class FaceDB:
     def delete_project(self, project_id: int) -> bool:
         cur = self.conn.execute(
             "DELETE FROM projects WHERE id = ?", (project_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    # ---- solutions catalog (searched from chat) -------------------------
+
+    def list_solutions(self):
+        """Return [(id, name, description, domain, link, ordering)] sorted
+        by (ordering, id)."""
+        return self.conn.execute(
+            "SELECT id, name, description, domain, link, ordering "
+            "FROM solutions ORDER BY ordering, id"
+        ).fetchall()
+
+    def add_solution(self, name: str, description: str = "", domain: str = "",
+                     link: str = "", ordering: int = 0) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO solutions (name, description, domain, link, ordering) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, description, domain, link, ordering),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def delete_solution(self, solution_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM solutions WHERE id = ?", (solution_id,)
         )
         self.conn.commit()
         return cur.rowcount > 0
