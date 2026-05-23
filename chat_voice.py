@@ -69,6 +69,9 @@ class ChatVoiceCapture:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._listening = False
+        # Set by _record when the user tapped the mic but never spoke within
+        # CHAT_VOICE_NO_SPEECH_SEC (vs tapping stop). _run uses it to nudge.
+        self._no_speech_timeout = False
 
     @property
     def listening(self) -> bool:
@@ -126,6 +129,10 @@ class ChatVoiceCapture:
             print(f"[chat-voice] no audio captured "
                    f"(record window {rec_dur:.2f}s -- VAD only saw silence)",
                    flush=True)
+            if self._no_speech_timeout:
+                # Tapped the mic but never spoke -> signal the main loop to
+                # nudge the user ("please speak when you're ready").
+                self._out_q.put({"event": "no_speech"})
             return
         print(f"[chat-voice] recorded {audio_kb:.0f} KB / "
                f"{rec_dur:.2f}s of audio, transcribing...", flush=True)
@@ -162,6 +169,7 @@ class ChatVoiceCapture:
         silence_run = 0.0
         had_voice = False
         start = time.time()
+        speech_start = None
         q: "queue.Queue[bytes]" = queue.Queue()
 
         def cb(indata, frames, time_info, status):  # noqa: ARG001
@@ -184,8 +192,16 @@ class ChatVoiceCapture:
             while True:
                 if self._stop.is_set():
                     break
-                if time.time() - start > config.CHAT_VOICE_MAX_SEC:
-                    break
+                now = time.time()
+                if had_voice:
+                    # Once talking, cap a single utterance from speech start.
+                    if speech_start and now - speech_start > config.CHAT_VOICE_MAX_SEC:
+                        break
+                else:
+                    # Still waiting for the user to begin -- give them up to
+                    # CHAT_VOICE_NO_SPEECH_SEC before we close the mic.
+                    if now - start > config.CHAT_VOICE_NO_SPEECH_SEC:
+                        break
                 try:
                     data = q.get(timeout=0.2)
                 except queue.Empty:
@@ -201,7 +217,9 @@ class ChatVoiceCapture:
                            f"(silence threshold {config.CHAT_VOICE_SILENCE_RMS}, "
                            f"silence_run={silence_run:.2f}s)", flush=True)
                 if rms >= config.CHAT_VOICE_SILENCE_RMS:
-                    had_voice = True
+                    if not had_voice:
+                        had_voice = True
+                        speech_start = time.time()
                     silence_run = 0.0
                 else:
                     silence_run += block / self._native_rate
@@ -209,7 +227,11 @@ class ChatVoiceCapture:
                     break
 
         if not had_voice:
+            # Distinguish a no-speech *timeout* (nudge the user) from the
+            # user tapping stop (just close quietly).
+            self._no_speech_timeout = not self._stop.is_set()
             return b""
+        self._no_speech_timeout = False
         pcm = b"".join(chunks)
         # Peak-normalise to ~-3 dBFS. USB mics on the Pi often record
         # quietly (peak ~-25 to -35 dBFS) and Whisper accuracy drops

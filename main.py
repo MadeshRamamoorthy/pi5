@@ -571,10 +571,18 @@ class CameraWorker(threading.Thread):
             # ---- process chat-voice transcripts --------------
             try:
                 while True:
-                    spoken = self.chat_q.get_nowait()
-                    if kiosk_state != "ACTIVE" or not spoken:
+                    item = self.chat_q.get_nowait()
+                    if kiosk_state != "ACTIVE":
                         continue
-                    self._submit_chat(last_known_emp_id, spoken)
+                    # No-speech nudge from the voice capture (tapped mic but
+                    # didn't speak in time).
+                    if isinstance(item, dict) and item.get("event") == "no_speech":
+                        self._handle_no_speech()
+                        last_interaction_at = time.time()
+                        continue
+                    if not item:
+                        continue
+                    self._submit_chat(last_known_emp_id, item)
                     last_interaction_at = time.time()
             except queue.Empty:
                 pass
@@ -1085,6 +1093,16 @@ class CameraWorker(threading.Thread):
         return (f"We've built {len(names)} solutions: {listing}. Ask me about "
                 "any one of them, or whether we have something for a specific "
                 "need.")
+
+    def _handle_no_speech(self):
+        """User tapped the mic but didn't speak within the window. Nudge
+        them in the chat (and aloud), then let the normal chat-idle goodbye
+        clock run -- another quiet stretch ends the session."""
+        msg = "Please speak when you're ready."
+        print("[chat] no speech captured -> nudging user", flush=True)
+        self._append_chat("assistant", msg)
+        self.greeter.say(msg)
+        self._last_chat_at = time.time()
 
     def _submit_chat(self, emp_id: str, question: str):
         # Capture prior conversation turns BEFORE appending this question,
