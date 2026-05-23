@@ -13,15 +13,13 @@ from __future__ import annotations
 import datetime as dt
 
 from database import FaceDB
+from set_projects import PROJECTS
 
 
-DEFAULT_PROJECTS = [
-    ("Seeder Ideas",                 "AI-led idea generation for new product seeds."),
-    ("Digital Quality Railcar Passport",
-                                     "Automated quality inspection for railcars."),
-    ("AWS COE",                      "Cloud accelerator and centre of excellence."),
-    ("Innovation Showcase Projects", "Calgary AI Club projects on display today."),
-]
+# Mirror the authoritative project list (set_projects.py) so a fresh
+# seed and an explicit reset show the same thing. seed_demo is additive
+# (skips existing titles); use set_projects.py to REPLACE the list.
+DEFAULT_PROJECTS = [(title, desc) for title, desc, _ordering in PROJECTS]
 
 
 def upcoming_session():
