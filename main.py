@@ -755,6 +755,15 @@ class CameraWorker(threading.Thread):
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
                 force_idle = self.idle_event.is_set()
 
+                # While ECHO is still reading a chat reply aloud, hold the
+                # idle clock at "now" so the 30s goodbye window only starts
+                # once playback FINISHES -- not when the reply was queued.
+                # (wait_idle(0) is a non-blocking "is the TTS queue drained?")
+                if (getattr(self, "_last_chat_at", 0)
+                        and bool(snap.get("chat_history"))
+                        and not self.tts.wait_idle(timeout=0)):
+                    self._last_chat_at = time.time()
+
                 # A chat that's gone quiet for CHAT_IDLE_GOODBYE_SEC gets a
                 # friendly spoken sign-off (by name) before we exit, so the
                 # next person starts a fresh conversation. The X button
