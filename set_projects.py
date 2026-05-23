@@ -29,8 +29,8 @@ PROJECTS = [
      "platform; and Gov Cycle, reclaiming lost assets.",
      2),
     ("AWS COE", "", 3),
-    ("Locally Developed Apps", "", 4),
-    ("Resources COE", "", 5),
+    ("Resources COE", "", 4),
+    ("Locally Developed Apps", "", 5),
 ]
 
 
