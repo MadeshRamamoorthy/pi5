@@ -153,6 +153,8 @@ AUDIO_OUTPUT_DEVICE: str | None = os.environ.get("AUDIO_OUTPUT_DEVICE") or None
 
 # ---- Wake-word / activation -----------------------------------------------
 BRAND_NAME = "ECHO SCOPE"
+# Spoken when a visitor asks "what is ECHO?" / "what does ECHO stand for?".
+ECHO_FULL_FORM = "Enterprise Center for Human-AI Outcomes, Amplifying Intent"
 CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
 WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
 # Aliases also accepted by the wake-word grammar. We accept the short

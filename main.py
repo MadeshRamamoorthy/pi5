@@ -167,6 +167,20 @@ def _is_weather_query(text: str) -> bool:
     return False
 
 
+def _is_echo_meaning_query(text: str) -> bool:
+    """"What is ECHO / what does ECHO stand for?" -- answered with the
+    brand's full form."""
+    t = (text or "").lower()
+    if "echo" not in t:
+        return False
+    return any(p in t for p in (
+        "what is echo", "what's echo", "whats echo", "what is the echo",
+        "what does echo", "echo stand for", "echo stands for",
+        "meaning of echo", "echo mean", "tell me about echo",
+        "about echo", "explain echo", "what is echoscope",
+    ))
+
+
 # Three local catalogs the chat can answer from, kept strictly distinct:
 #   solution -> developed tools/solutions (searchable catalog)
 #   project  -> what's on display today (idle dashboard list)
@@ -1102,6 +1116,16 @@ class CameraWorker(threading.Thread):
             if ans:
                 print(f"[chat] weather intent -> local data: {ans!r}",
                       flush=True)
+                self._append_chat("assistant", ans)
+                self.greeter.say(ans)
+                self._last_chat_at = time.time()
+                return
+        # "What is ECHO?" -> the brand's full form (no LLM).
+        if _is_echo_meaning_query(question):
+            full = getattr(config, "ECHO_FULL_FORM", "").strip()
+            if full:
+                ans = f"ECHO stands for {full}."
+                print(f"[chat] echo-meaning intent -> {ans!r}", flush=True)
                 self._append_chat("assistant", ans)
                 self.greeter.say(ans)
                 self._last_chat_at = time.time()
