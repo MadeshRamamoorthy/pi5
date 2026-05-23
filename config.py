@@ -155,6 +155,16 @@ AUDIO_OUTPUT_DEVICE: str | None = os.environ.get("AUDIO_OUTPUT_DEVICE") or None
 BRAND_NAME = "ECHO SCOPE"
 # Spoken when a visitor asks "what is ECHO?" / "what does ECHO stand for?".
 ECHO_FULL_FORM = "Enterprise Center for Human-AI Outcomes, Amplifying Intent"
+# Spoken when a visitor asks about the AI lab itself ("what is the AI lab?",
+# "what's special about Calgary's AI lab?", "what's the motive of the lab?").
+AI_LAB_ABOUT = (
+    "ECHO (Enterprise Center for Human-AI Outcomes) is Calgary's dedicated "
+    "AI lab — a collaborative space where professionals, builders, and "
+    "learners come together to work on real AI projects, share knowledge, "
+    "and push the boundaries of what's possible with AI. Whether you're "
+    "building something new or just getting started, ECHO is where intent "
+    "meets action."
+)
 CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
 WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
 # Aliases also accepted by the wake-word grammar. We accept the short

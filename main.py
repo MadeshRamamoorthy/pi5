@@ -239,6 +239,24 @@ def _classify_topic(text: str):
     return None
 
 
+def _is_ai_lab_query(text: str) -> bool:
+    """A general question about the AI lab itself ("what is the AI lab?",
+    "what's special about Calgary's AI lab?", "what's the lab's motive?").
+    Defers to the catalog answers when the question actually names sessions,
+    tools, or projects -- those have their own responses."""
+    t = (text or "").lower()
+    words = set(re.findall(r"[a-z']+", t))
+    if "lab" not in words and "calgary ai" not in t:
+        return False
+    if (words & _TOOL_NOUNS) or (words & _SESSION_NOUNS) or (words & _PROJECT_NOUNS):
+        return False
+    return any(p in t for p in (
+        "what is", "what's", "whats", "what are", "tell me about", "about",
+        "special", "motive", "purpose", "mission", "goal", "why",
+        "what does", "what do", "what happens", "explain", "who",
+    ))
+
+
 # ---------- silent learning -----------------------------------------------
 
 
@@ -1150,6 +1168,15 @@ class CameraWorker(threading.Thread):
                 print(f"[chat] echo-meaning intent -> {ans!r}", flush=True)
                 self._append_chat("assistant", ans)
                 self.greeter.say(ans)
+                self._last_chat_at = time.time()
+                return
+        # "What is the AI lab / what's special about it?" -> the lab blurb.
+        if _is_ai_lab_query(question):
+            blurb = getattr(config, "AI_LAB_ABOUT", "").strip()
+            if blurb:
+                print("[chat] ai-lab intent -> lab blurb", flush=True)
+                self._append_chat("assistant", blurb)
+                self.greeter.say(blurb)
                 self._last_chat_at = time.time()
                 return
         # One question is about at most one of: the developed-solutions
