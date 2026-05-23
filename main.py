@@ -16,6 +16,7 @@ import argparse
 import os
 import queue
 import random
+import re
 import threading
 import time
 import uuid
@@ -166,72 +167,83 @@ def _is_weather_query(text: str) -> bool:
     return False
 
 
-def _is_project_list_query(text: str) -> bool:
-    """Return True for "what projects / AI files / demos are on display
-    today?"-style listing questions. We answer these straight from the
-    project list shown on the dashboard (db/state.projects) so the kiosk
-    reads out exactly what's on display -- never a hallucinated extra.
-    Detail questions ("tell me about project X") fall through to the LLM,
-    which still gets the project list folded into its system prompt."""
+# Three local catalogs the chat can answer from, kept strictly distinct:
+#   solution -> developed tools/solutions (searchable catalog)
+#   project  -> what's on display today (idle dashboard list)
+#   session  -> AI Lab workshops (completed + planned)
+_TOOL_NOUNS = {
+    "solution", "solutions", "tool", "tools", "app", "apps",
+    "application", "applications", "platform", "platforms",
+    "product", "products",
+}
+_PROJECT_NOUNS = {"project", "projects", "demo", "demos", "exhibit", "exhibits"}
+_SESSION_NOUNS = {
+    "session", "sessions", "workshop", "workshops", "agenda", "curriculum",
+}
+_BUILD_PHRASES = (
+    "have you built", "have you developed", "have you created",
+    "did you build", "did you develop", "did you make",
+    "what did you build", "what did you develop",
+    "what was built", "what was developed", "what was created",
+    "what were built", "what were developed",
+)
+_NEED_PHRASES = (
+    "do you have", "do we have", "something for", "anything for",
+    "looking for", "tool for", "platform for", "app for", "product for",
+    "is there a tool", "is there a platform", "is there an app",
+)
+
+
+def _classify_topic(text: str):
+    """Route a chat question to exactly one local catalog -- 'solution',
+    'project', or 'session' -- or None to let the LLM handle it.
+
+    Explicit category nouns take precedence (solution > project > session)
+    so the three never bleed into each other: 'what tools are in the AI
+    lab' is about tools (solution), NOT sessions, even though it mentions
+    the lab. Only when no category noun appears do generic cues ('coming
+    up', 'on display', 'have you built') break the tie.
+    """
     t = (text or "").lower()
-    return any(p in t for p in (
-        "what project", "which project", "what projects", "what are the project",
-        "projects available", "projects on display", "project on display",
-        "what ai file", "which ai file", "what ai files", "ai files on display",
-        "what demo", "which demo", "what demos",
-        "what's on display", "whats on display", "what is on display",
-        "what can i see", "what can we see",
-        "list the project", "show me the project",
-    ))
+    words = set(re.findall(r"[a-z']+", t))
+
+    if (words & _TOOL_NOUNS) or any(p in t for p in _BUILD_PHRASES):
+        return "solution"
+    if (words & _PROJECT_NOUNS) or "on display" in t or "ai file" in t:
+        return "project"
+    if words & _SESSION_NOUNS:
+        return "session"
+
+    # No explicit category noun -- generic cues.
+    if "what can i see" in t or "what can we see" in t:
+        return "project"
+    if ("lab" in words or "coming up" in t or "upcoming" in t
+            or "what's next" in t or "whats next" in t or "schedule" in t):
+        return "session"
+    if any(p in t for p in _NEED_PHRASES):
+        return "solution"
+    return None
 
 
 def _is_solution_list_query(text: str) -> bool:
-    """General "what tools / solutions were developed?" -- answered by
-    listing the catalog names rather than a single match."""
+    """Within the 'solution' topic: a general "list them all" question
+    (answered by listing catalog names) vs a specific "do you have one for
+    X?" (answered by a single best match)."""
     t = (text or "").lower()
     return any(p in t for p in (
-        # solutions ...
         "what solutions", "which solutions", "list of solutions",
         "list the solutions", "all solutions", "all the solutions",
         "solutions you have", "solutions you've", "solutions have you",
         "solutions developed", "solutions you developed", "solutions were",
-        # tools ...
         "what tools", "which tools", "list of tools", "list the tools",
         "all tools", "all the tools", "tools developed", "tools you developed",
         "tools were", "tools you have", "tools have you",
-        # apps / platforms / products ...
         "what apps", "which apps", "what platforms", "which platforms",
         "what products", "which products",
-        # generic "what was/were built/developed/created" ...
         "what have you built", "what have you developed",
         "what did you build", "what did you develop",
         "what was built", "what was developed", "what were built",
         "what were developed", "what have you created", "what was created",
-    ))
-
-
-def _is_lab_session_query(text: str) -> bool:
-    """Asking about AI Lab sessions (completed or planned)."""
-    t = (text or "").lower()
-    return any(p in t for p in (
-        "session", "sessions", "workshop", "workshops", "ai lab",
-        "lab session", "in the lab", "coming up", "upcoming", "agenda",
-        "what's next", "whats next", "next event", "schedule",
-        "training session",
-    ))
-
-
-def _is_solution_query(text: str) -> bool:
-    """Is the visitor asking whether we have a solution/tool for some need?
-    Broad on purpose -- when nothing matches the catalog we fall back to
-    the LLM, so a false positive is harmless."""
-    t = (text or "").lower()
-    return any(p in t for p in (
-        "solution", "do you have", "do we have", "is there a tool",
-        "is there a platform", "is there an app", "any tool", "any platform",
-        "anything for", "tool for", "platform for", "app for", "product for",
-        "have you built", "have you developed", "did you build",
-        "did you develop", "looking for a", "something for",
     ))
 
 
@@ -1094,44 +1106,22 @@ class CameraWorker(threading.Thread):
                 self.greeter.say(ans)
                 self._last_chat_at = time.time()
                 return
-        # AI Lab sessions: completed + planned, answered from config.
-        if _is_lab_session_query(question):
-            ans = self._lab_session_answer(question)
+        # One question is about at most one of: the developed-solutions
+        # catalog, the on-display projects, or the AI Lab sessions. Classify
+        # once, answer from that catalog only. Anything unclassified (or
+        # with no local data to answer) falls through to the LLM.
+        topic = _classify_topic(question)
+        if topic is not None:
+            if topic == "session":
+                ans = self._lab_session_answer(question)
+            elif topic == "project":
+                ans = self._project_list_answer()
+            else:   # "solution"
+                ans = (self._solutions_summary()
+                       if _is_solution_list_query(question)
+                       else self._solution_answer(question))
             if ans:
-                print(f"[chat] lab-session intent -> {ans!r}", flush=True)
-                self._append_chat("assistant", ans)
-                self.greeter.say(ans)
-                self._last_chat_at = time.time()
-                return
-        # Projects on display: answer from the live project list so the
-        # kiosk reads out exactly what's there (no LLM, no hallucinated
-        # extras, instant). Falls through to the LLM if the list is empty.
-        if _is_project_list_query(question):
-            ans = self._project_list_answer()
-            if ans:
-                print(f"[chat] project-list intent -> local data: {ans!r}",
-                      flush=True)
-                self._append_chat("assistant", ans)
-                self.greeter.say(ans)
-                self._last_chat_at = time.time()
-                return
-        # Solutions catalog: "what solutions have you built?" -> summary;
-        # "do you have something for X?" -> best catalog match. Searched
-        # locally (no LLM); falls through to the LLM only when intent is
-        # vague and nothing matches.
-        if _is_solution_list_query(question):
-            ans = self._solutions_summary()
-            if ans:
-                print(f"[chat] solution-list intent -> {ans!r}", flush=True)
-                self._append_chat("assistant", ans)
-                self.greeter.say(ans)
-                self._last_chat_at = time.time()
-                return
-        if _is_solution_query(question):
-            ans = self._solution_answer(question)
-            if ans:
-                print(f"[chat] solution intent -> local match: {ans!r}",
-                      flush=True)
+                print(f"[chat] {topic} intent -> {ans!r}", flush=True)
                 self._append_chat("assistant", ans)
                 self.greeter.say(ans)
                 self._last_chat_at = time.time()
