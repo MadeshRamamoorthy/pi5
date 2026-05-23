@@ -1108,24 +1108,33 @@ class CameraWorker(threading.Thread):
                 return
         # One question is about at most one of: the developed-solutions
         # catalog, the on-display projects, or the AI Lab sessions. Classify
-        # once, answer from that catalog only. Anything unclassified (or
-        # with no local data to answer) falls through to the LLM.
+        # once and answer ONLY from that catalog -- never fall through to
+        # the LLM (whose prompt carries the projects list and would
+        # otherwise answer e.g. a tools question with the project list).
         topic = _classify_topic(question)
         if topic is not None:
             if topic == "session":
-                ans = self._lab_session_answer(question)
+                ans = (self._lab_session_answer(question)
+                       or "I don't have the AI Lab session schedule handy "
+                          "right now.")
             elif topic == "project":
-                ans = self._project_list_answer()
+                ans = (self._project_list_answer()
+                       or "There's nothing on display today just yet.")
             else:   # "solution"
-                ans = (self._solutions_summary()
-                       if _is_solution_list_query(question)
-                       else self._solution_answer(question))
-            if ans:
-                print(f"[chat] {topic} intent -> {ans!r}", flush=True)
-                self._append_chat("assistant", ans)
-                self.greeter.say(ans)
-                self._last_chat_at = time.time()
-                return
+                if _is_solution_list_query(question):
+                    ans = (self._solutions_summary()
+                           or "Our solutions list isn't loaded yet -- please "
+                              "check back soon.")
+                else:
+                    ans = (self._solution_answer(question)
+                           or "I couldn't find a matching solution in our "
+                              "catalog. Ask me to list the solutions we've "
+                              "built and I'll run through them.")
+            print(f"[chat] {topic} intent -> {ans!r}", flush=True)
+            self._append_chat("assistant", ans)
+            self.greeter.say(ans)
+            self._last_chat_at = time.time()
+            return
         if self.chat.budget.remaining(emp_id) <= 0:
             answer = (
                 f"Lovely chatting! That's {config.CHAT_MAX_QUESTIONS_PER_SESSION} "
