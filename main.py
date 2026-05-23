@@ -749,11 +749,7 @@ class CameraWorker(threading.Thread):
                         and not snap.get("listening")
                         and since_chat >= config.CHAT_IDLE_GOODBYE_SEC):
                     name = (snap.get("person") or {}).get("name") or ""
-                    farewell = (
-                        f"Thanks for chatting, {name}! Come say hello again "
-                        "anytime." if name else
-                        "Thanks for chatting! Come say hello again anytime."
-                    )
+                    farewell = self._personal_farewell(name)
                     self._append_chat("assistant", farewell)
                     self.greeter.say(farewell)
                     self._goodbye_exit = True
@@ -1094,6 +1090,12 @@ class CameraWorker(threading.Thread):
                 "any one of them, or whether we have something for a specific "
                 "need.")
 
+    def _personal_farewell(self, name: str) -> str:
+        """Goodbye line, addressed by name when we know who it is."""
+        if name:
+            return f"Thanks for chatting, {name}! Come say hello again anytime."
+        return messages.random_farewell()
+
     def _handle_no_speech(self):
         """User tapped the mic but didn't speak within the window. Nudge
         them in the chat (and aloud), then let the normal chat-idle goodbye
@@ -1115,7 +1117,8 @@ class CameraWorker(threading.Thread):
         # Saves a chat-budget slot AND ~1-2 s of LLM round-trip on the
         # most common session-end gesture.
         if _is_goodbye(question):
-            farewell = messages.random_farewell()
+            name = (self.state.snapshot().get("person") or {}).get("name") or ""
+            farewell = self._personal_farewell(name)
             print(f"[chat] goodbye intent matched: {question!r} -> {farewell!r}",
                   flush=True)
             self._append_chat("assistant", farewell)

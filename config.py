@@ -189,6 +189,8 @@ CHAT_GOODBYE_TOKENS = (
     "goodbye",
     "good bye",
     "bye bye",
+    "thank you",            # gratitude = done (exact / end-of-sentence)
+    "thanks",
     "thanks bye",
     "thank you bye",
     "bye thank you",       # bye-first phrasings (startswith match)

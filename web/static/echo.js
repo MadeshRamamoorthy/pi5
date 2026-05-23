@@ -115,6 +115,9 @@
   function refreshChatMode() {
     const inChat = !!(
       state.listening || state.transcribing || state.chat_pending ||
+      // Open the chat window as soon as a person is recognised so they see
+      // their name and can tap to speak -- no need to wait for them to act.
+      (state.person && state.person.name) ||
       (Array.isArray(state.chat_history) && state.chat_history.length > 0)
     );
     document.body.dataset.chatMode = inChat ? "true" : "false";
