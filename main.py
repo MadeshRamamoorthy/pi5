@@ -186,17 +186,27 @@ def _is_project_list_query(text: str) -> bool:
 
 
 def _is_solution_list_query(text: str) -> bool:
-    """General "what solutions have you built?" -- answered with a count +
-    domains summary rather than a single match (there are too many to read
-    out)."""
+    """General "what tools / solutions were developed?" -- answered by
+    listing the catalog names rather than a single match."""
     t = (text or "").lower()
     return any(p in t for p in (
+        # solutions ...
         "what solutions", "which solutions", "list of solutions",
-        "list the solutions", "all solutions", "solutions you have",
-        "solutions you've", "solutions have you", "solutions developed",
-        "solutions you developed", "what have you built",
-        "what have you developed", "what did you build",
-        "what tools do you", "what have you created",
+        "list the solutions", "all solutions", "all the solutions",
+        "solutions you have", "solutions you've", "solutions have you",
+        "solutions developed", "solutions you developed", "solutions were",
+        # tools ...
+        "what tools", "which tools", "list of tools", "list the tools",
+        "all tools", "all the tools", "tools developed", "tools you developed",
+        "tools were", "tools you have", "tools have you",
+        # apps / platforms / products ...
+        "what apps", "which apps", "what platforms", "which platforms",
+        "what products", "which products",
+        # generic "what was/were built/developed/created" ...
+        "what have you built", "what have you developed",
+        "what did you build", "what did you develop",
+        "what was built", "what was developed", "what were built",
+        "what were developed", "what have you created", "what was created",
     ))
 
 
@@ -950,19 +960,21 @@ class CameraWorker(threading.Thread):
                 + ", ".join(titles[:-1]) + f", and {titles[-1]}.")
 
     def _solutions_summary(self) -> str | None:
-        """Count + domains overview for "what solutions have you built?"."""
+        """List the catalog names for "what tools/solutions were
+        developed?". Names only (descriptions would be far too long to read
+        out); the visitor can then ask about any one for details."""
         rows = self.db.list_solutions()
         if not rows:
             return None
-        domains = []
-        for r in rows:
-            d = (r[3] or "").strip()
-            if d and d.lower() not in (x.lower() for x in domains):
-                domains.append(d)
-        area = ", ".join(domains[:6]) if domains else "several areas"
-        return (f"We've built {len(rows)} AI solutions across {area}. Ask me "
-                "about a specific need -- like 'do you have something for "
-                "container security?' -- and I'll point you to the right one.")
+        names = [(r[1] or "").strip() for r in rows if (r[1] or "").strip()]
+        if not names:
+            return None
+        if len(names) == 1:
+            listing = names[0]
+        else:
+            listing = ", ".join(names[:-1]) + f", and {names[-1]}"
+        return (f"We've built {len(names)} solutions: {listing}. Ask me about "
+                "any one of them and I'll tell you what it does.")
 
     def _solution_answer(self, question: str) -> str | None:
         """Match the question against the solutions catalog. Returns a
