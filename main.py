@@ -453,9 +453,15 @@ class CameraWorker(threading.Thread):
                     return
                 time.sleep(min(2 ** attempt, 16))
         else:
-            print("[camera-worker] init failed after retries; exiting for "
-                  "restart", flush=True)
-            os._exit(1)
+            print("[camera-worker] init failed after retries", flush=True)
+            if _under_systemd():
+                print("[camera-worker] exiting for systemd restart",
+                      flush=True)
+                os._exit(1)
+            print("[camera-worker] not under systemd -- leaving the web "
+                  "server up (camera/recognition unavailable). Install "
+                  "systemd/echo-scope.service for auto-restart.", flush=True)
+            return
         emp_ids, names, matrix = self.db.load_all()
         print(f"Loaded {matrix.shape[0]} embeddings for {len(set(emp_ids))} employees.")
         self._refresh_idle_data()
@@ -1376,25 +1382,39 @@ def main():
 _shutdown = threading.Event()
 
 
+def _under_systemd() -> bool:
+    """True when launched by systemd (it sets INVOCATION_ID). We only do
+    the process-suicide-for-restart dance when something will actually
+    restart us; run by hand, we keep serving instead."""
+    return bool(os.environ.get("INVOCATION_ID"))
+
+
 def _start_watchdog(worker: "CameraWorker") -> None:
-    """Monitor the camera worker; on death or stall, exit the process so
-    the systemd unit (Restart=always) relaunches with clean hardware
-    state. A clean restart beats trying to re-acquire leaked camera / NPU
-    handles inside a wedged process."""
+    """Monitor the camera worker. Under systemd, exit the process on a
+    dead/stalled worker so Restart=always relaunches with clean hardware
+    state. Run by hand (no systemd), don't kill the backend -- a worker
+    fault then just stops recognition while the web server stays up, like
+    it did before the watchdog existed."""
     def watch():
         while not _shutdown.is_set():
             _shutdown.wait(config.WATCHDOG_POLL_SEC)
             if _shutdown.is_set():
                 return
-            if not worker.is_alive():
-                print("[watchdog] camera worker thread is dead -- exiting "
-                      "for restart", flush=True)
-                os._exit(1)
+            dead = not worker.is_alive()
             stale = time.time() - getattr(worker, "last_loop_at", time.time())
-            if stale > config.WORKER_HEARTBEAT_STALL_SEC:
-                print(f"[watchdog] camera worker stalled {stale:.0f}s -- "
-                      "exiting for restart", flush=True)
+            stalled = stale > config.WORKER_HEARTBEAT_STALL_SEC
+            if not (dead or stalled):
+                continue
+            reason = "thread is dead" if dead else f"stalled {stale:.0f}s"
+            if _under_systemd():
+                print(f"[watchdog] camera worker {reason} -- exiting for "
+                      "systemd restart", flush=True)
                 os._exit(1)
+            print(f"[watchdog] camera worker {reason}. Not under systemd, so "
+                  "leaving the web server up (recognition may be down). "
+                  "Install systemd/echo-scope.service for auto-restart.",
+                  flush=True)
+            return
     threading.Thread(target=watch, daemon=True, name="watchdog").start()
 
 

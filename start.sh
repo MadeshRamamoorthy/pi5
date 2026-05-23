@@ -287,28 +287,35 @@ else
     echo "   browser    : $BROWSER (kiosk mode)"
     case "$BROWSER" in
         chromium*|google-chrome|chrome)
-            "$BROWSER" \
-                --kiosk --noerrdialogs --disable-infobars \
-                --disable-features=TranslateUI \
-                --autoplay-policy=no-user-gesture-required \
-                --app="$KIOSK_URL" &
+            BROWSER_CMD=("$BROWSER"
+                --kiosk --noerrdialogs --disable-infobars
+                --disable-features=TranslateUI
+                --autoplay-policy=no-user-gesture-required
+                --app="$KIOSK_URL")
             ;;
         *)
-            "$BROWSER" "$KIOSK_URL" &
+            BROWSER_CMD=("$BROWSER" "$KIOSK_URL")
             ;;
     esac
-    BROWSER_PID=$!
-    # Exit as soon as EITHER the backend or the browser dies, then tear the
-    # other down. Under systemd (Restart=always) this gives a clean full
-    # relaunch when the backend watchdog bounces the process; run by hand,
-    # closing the browser still stops the backend like before. The `if`
-    # consumes wait's exit status so `set -e` doesn't abort before cleanup.
-    if wait -n "$BACKEND_PID" "$BROWSER_PID"; then
-        status=0
+    if [[ -n "${INVOCATION_ID:-}" ]]; then
+        # Under systemd: run the browser in the background and exit as soon
+        # as EITHER the backend or browser dies, tearing the other down, so
+        # Restart=always gives a clean full relaunch. The `if` consumes
+        # wait's status so `set -e` doesn't abort before cleanup.
+        "${BROWSER_CMD[@]}" &
+        BROWSER_PID=$!
+        if wait -n "$BACKEND_PID" "$BROWSER_PID"; then
+            status=0
+        else
+            status=$?
+        fi
+        kill "$BACKEND_PID" "$BROWSER_PID" 2>/dev/null || true
+        wait 2>/dev/null || true
+        exit $status
     else
-        status=$?
+        # Run by hand: exec the browser (old behaviour). The backend keeps
+        # running independently of this shell, so a browser hiccup never
+        # takes the web server down.
+        exec "${BROWSER_CMD[@]}"
     fi
-    kill "$BACKEND_PID" "$BROWSER_PID" 2>/dev/null || true
-    wait 2>/dev/null || true
-    exit $status
 fi
