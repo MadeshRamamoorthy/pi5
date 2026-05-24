@@ -168,17 +168,18 @@ def _is_weather_query(text: str) -> bool:
 
 
 def _is_echo_meaning_query(text: str) -> bool:
-    """"What is ECHO / what does ECHO stand for?" -- answered with the
-    brand's full form."""
+    """Any question mentioning ECHO -> always answer with the brand's full
+    form, never a general LLM reply. The only exception is when the question
+    explicitly names a catalog ("what TOOLS has echo built", "echo SESSIONS")
+    -- those still go to the relevant catalog. (_TOOL_NOUNS / _SESSION_NOUNS /
+    _PROJECT_NOUNS are module globals defined below; resolved at call time.)"""
     t = (text or "").lower()
     if "echo" not in t:
         return False
-    return any(p in t for p in (
-        "what is echo", "what's echo", "whats echo", "what is the echo",
-        "what does echo", "echo stand for", "echo stands for",
-        "meaning of echo", "echo mean", "tell me about echo",
-        "about echo", "explain echo", "what is echoscope",
-    ))
+    words = set(re.findall(r"[a-z']+", t))
+    if (words & _TOOL_NOUNS) or (words & _SESSION_NOUNS) or (words & _PROJECT_NOUNS):
+        return False
+    return True
 
 
 # Three local catalogs the chat can answer from, kept strictly distinct:
