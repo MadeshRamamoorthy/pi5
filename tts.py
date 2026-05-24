@@ -130,12 +130,16 @@ class PiperPyBackend(_Backend):
         self._probe_streaming()
 
     def _probe_streaming(self) -> None:
-        """Try calling voice.synthesize(" ") as a generator. If it yields
+        """Try calling voice.synthesize(<probe>) as a generator. If it yields
         an AudioChunk-like object with discoverable PCM bytes, cache the
         accessor and we're set. Anything that fails leaves streaming off
-        and we fall back to the file path."""
+        and we fall back to the file path.
+
+        Probe with real words, NOT a single space: a space synthesizes to an
+        empty first chunk, so the "len(bytes) > 0" accessor check below would
+        wrongly fail and silently disable streaming."""
         try:
-            gen = self._voice.synthesize(" ")
+            gen = self._voice.synthesize("Hello there.")
             if not hasattr(gen, "__next__"):
                 return
             first = next(iter(gen))
