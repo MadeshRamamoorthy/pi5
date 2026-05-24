@@ -710,6 +710,18 @@ class CameraWorker(threading.Thread):
 
                 # Auto-open the register overlay for new visitors.
                 snap = self.state.snapshot()
+                # Don't offer registration while a session is already engaged
+                # with someone: a recognised person owns it (_session_primary),
+                # they're talking (listening), or a chat happened recently. A
+                # momentary recognition dip (head turn, lighting) shouldn't pop
+                # the "I haven't recognised you" prompt mid-conversation.
+                session_engaged = (
+                    self._session_primary is not None
+                    or snap.get("listening")
+                    or (bool(snap.get("chat_history"))
+                        and (time.time() - getattr(self, "_last_chat_at", 0))
+                            <= config.CHAT_KEEPALIVE_SEC)
+                )
                 if biggest_quality_unknown:
                     last_interaction_at = time.time()
                     unknown_streak += 1
@@ -720,6 +732,7 @@ class CameraWorker(threading.Thread):
                             and unknown_streak >= config.UNKNOWN_FRAMES_BEFORE_REGISTER
                             and not snap.get("register_open")
                             and not snap.get("chat_pending")
+                            and not session_engaged
                             and not declined_recently):
                         unknown_streak = 0
                         self.state.update(
