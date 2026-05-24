@@ -95,7 +95,14 @@
     if ("fun_fact" in diff)       renderFunFact(diff.fun_fact);
     if ("toast" in diff)          renderToast(diff.toast);
     if ("wake_phrase" in diff) {
-      const phrase = `Hello ${diff.wake_phrase.replace(/^hello\s+/i, "")}!`;
+      // Show both the short and full wake phrases, e.g.
+      // "'Hello ECHO' or 'Hello ECHO SCOPE'".
+      const full = diff.wake_phrase.replace(/^hello\s+/i, "").trim();
+      const short = (full.split(/\s+/)[0] || full);
+      const up = (s) => s.toUpperCase();
+      const phrase = full.toLowerCase() === short.toLowerCase()
+        ? `'Hello ${up(full)}'`
+        : `'Hello ${up(short)}' or 'Hello ${up(full)}'`;
       $$('[data-bind="wake-phrase"]').forEach(e => e.textContent = phrase);
     }
     if ("register_open" in diff)    $("#register-overlay").hidden = !diff.register_open;

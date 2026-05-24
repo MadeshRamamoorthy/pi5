@@ -20,17 +20,17 @@ from database import FaceDB
 # The single source of truth for what's "on display today". seed_demo.py
 # imports this so a fresh install and an explicit reset stay in sync.
 PROJECTS = [
-    ("Digital Quality Railcar Passport",
-     "IoT-driven potash quality control and railcar traceability.",
-     1),
     ("Business Incubator",
      "AI-powered tool for airline smart troubleshooting & automated "
      "operation support; TrustLayer AI, an enterprise AI reliability "
      "platform; and Gov Cycle, reclaiming lost assets.",
-     2),
-    ("AWS COE", "", 3),
-    ("Resources COE", "", 4),
-    ("Locally Developed Apps", "", 5),
+     1),
+    ("AWS COE", "", 2),
+    ("Locally Developed Apps", "", 3),
+    ("Digital Quality Railcar Passport",
+     "IoT-driven potash quality control and railcar traceability.",
+     4),
+    ("Resources COE", "", 5),
 ]
 
 

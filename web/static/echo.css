@@ -240,6 +240,12 @@ body { display: flex; align-items: center; justify-content: center; }
 }
 .projects-grid li.placeholder { color: var(--fg-dim); }
 .projects-grid li.placeholder::before { background: var(--fg-dim); }
+.projects-hint {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--fg-dim);
+}
 
 .session-card {
   padding: 20px 24px;
