@@ -346,6 +346,12 @@ AI_LAB_SESSIONS_PLANNED = [
     ("Agentic AI", "June 5th"),
 ]
 
+# Headline count quoted for "how many tools/solutions?" questions and the
+# listing intro. The solutions DB catalog (set_solutions.py) holds the
+# detailed entries used to answer specific "do you have a tool for X?"
+# questions; this is just the public number we advertise.
+SOLUTIONS_COUNT_CLAIM = "50+"
+
 # ---- Chat-voice ASR -------------------------------------------------------
 # Wake-word listener stays on the small Vosk model. Long-form chat
 # dictation goes through this separate backend, lazy-loaded so the

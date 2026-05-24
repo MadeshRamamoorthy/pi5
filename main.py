@@ -1093,11 +1093,17 @@ class CameraWorker(threading.Thread):
         return " ".join(segs) or None
 
     def _solution_topic_answer(self, question: str) -> str:
-        """Answer any tools/solutions question. Match first: if the question
-        names a specific need ("a tool for container security") it returns
-        that solution's summary. Otherwise -- a general question ("what tools
-        were developed", "solutions we build", "tools in the AI lab") -- it
-        lists all the solutions. Always returns something (never the LLM)."""
+        """Answer any tools/solutions question. "How many?" returns the
+        headline count claim. A specific need ("a tool for container
+        security") returns that solution's summary. Anything general lists
+        the catalog (framed by the headline count). Always returns
+        something (never the LLM)."""
+        claim = getattr(config, "SOLUTIONS_COUNT_CLAIM", "50+")
+        t = (question or "").lower()
+        if any(p in t for p in ("how many", "number of", "count of",
+                                "how much", "total number")):
+            return (f"There are {claim} tools and solutions developed and "
+                    "implemented.")
         rows = self.db.list_solutions()
         if not rows:
             return "Our solutions list isn't loaded yet -- please check back soon."
@@ -1110,13 +1116,13 @@ class CameraWorker(threading.Thread):
             if summary:
                 ans += f" {summary}"
             return ans
-        # General question -> list every solution by name.
+        # General question -> headline count + a sample of names.
         names = [(r[1] or "").strip() for r in rows if (r[1] or "").strip()]
         listing = (names[0] if len(names) == 1
                    else ", ".join(names[:-1]) + f", and {names[-1]}")
-        return (f"We've built {len(names)} solutions: {listing}. Ask me about "
-                "any one of them, or whether we have something for a specific "
-                "need.")
+        return (f"We've developed and implemented {claim} tools and solutions. "
+                f"Here are some of them: {listing}. Ask me about any one of "
+                "them, or whether we have something for a specific need.")
 
     def _personal_farewell(self, name: str) -> str:
         """Goodbye line, addressed by name when we know who it is."""
