@@ -30,6 +30,9 @@ COSINE_MATCH_THRESHOLD = 0.42  # ArcFace: 0.35-0.45 typical; lower => looser mat
 # system greet every recognised face in a multi-person scene without
 # spamming when someone keeps stepping in and out of frame.
 GREET_COOLDOWN_SEC = 60
+# Appended to a recognised person's greeting so they know how to start
+# talking. Set to "" to disable.
+GREET_TAP_PROMPT = "Tap to speak to chat with me!"
 
 # Camera
 CAMERA_RESOLUTION = (1280, 720)
@@ -125,8 +128,10 @@ PIPER_MODEL_PATH = MODELS_DIR / "piper" / "en_US-hfc_female-medium.onnx"
 # (Anker A3301 etc.) often clip the first ~300 ms while their amp wakes up.
 # 0 disables. In the streaming TTS path the silence is written to aplay's
 # stdin before the first real audio chunk; in the legacy file path it's
-# inserted into the WAV. Total latency is similar either way.
-TTS_PREBUFFER_MS = 500
+# inserted into the WAV. Kept small (150 ms) so the voice starts promptly
+# after a reply is posted -- bump back toward 300-500 if the speaker clips
+# the first syllable.
+TTS_PREBUFFER_MS = 150
 
 # Stream TTS audio to aplay as soon as Piper emits each chunk, rather than
 # synthesising the whole utterance to a temp WAV first. Saves ~1-2 s on
@@ -201,12 +206,24 @@ CHAT_GOODBYE_TOKENS = (
     "bye bye",
     "thank you",            # gratitude = done (exact / end-of-sentence)
     "thanks",
+    "no thank you",
+    "no thanks",
     "thanks bye",
     "thank you bye",
     "bye thank you",       # bye-first phrasings (startswith match)
     "bye thanks",
     "thanks goodbye",
     "goodbye thank you",
+    "i'm good",
+    "im good",
+    "i'm all good",
+    "that's it",
+    "thats it",
+    "nothing else",
+    "no more questions",
+    "catch you later",
+    "have a good day",
+    "have a good one",
     "okay bye",
     "ok bye",
     "alright bye",

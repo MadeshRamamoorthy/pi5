@@ -331,7 +331,9 @@ class Greeter:
         if now - self._last_greeted.get(emp_id, 0.0) < config.GREET_COOLDOWN_SEC:
             return False
         self._last_greeted[emp_id] = now
-        msg = self._pick_welcome(emp_id, name)
+        welcome = self._pick_welcome(emp_id, name)
+        tap = getattr(config, "GREET_TAP_PROMPT", "").strip()
+        msg = f"{welcome} {tap}".strip() if tap else welcome
         print(f"[GREET] {msg}", flush=True)
         # Push the toast + person state from the TTS worker thread so
         # the UI update lands exactly when audio starts playing, not

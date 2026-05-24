@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import time
 import wave
 from pathlib import Path
 
@@ -175,11 +176,14 @@ class PiperPyBackend(_Backend):
     def _speak_stream(self, text: str) -> None:
         """Pipe Piper PCM straight to aplay's stdin. First chunk lands
         in ~200-300 ms vs ~1.5-2 s for the file path on long replies."""
+        t0 = time.time()
         chunks = iter(self._voice.synthesize(text))
         try:
             first = next(chunks)
         except StopIteration:
             return
+        print(f"[tts] first chunk in {(time.time() - t0) * 1000:.0f}ms "
+              f"({len(text)} chars)", flush=True)
         sr = getattr(first, "sample_rate", None) or self._chunk_sample_rate
         sw = getattr(first, "sample_width", self._chunk_sample_width)
         ch = getattr(first, "sample_channels", self._chunk_channels)
