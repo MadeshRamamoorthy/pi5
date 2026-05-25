@@ -649,38 +649,36 @@ class CameraWorker(threading.Thread):
                     if liveness_on else True
                 )
                 pending_greets = []
-                for i, det in enumerate(dets):
+                # Engage ONLY the closest (biggest) face. Anyone else in
+                # frame -- passing through, standing behind, known or new --
+                # is ignored entirely: not embedded, greeted, registered, or
+                # even boxed. Keeps the kiosk locked onto the person actually
+                # in front of it (and embeds just one face per frame).
+                if biggest is not None:
+                    det = biggest
                     ok, _ = is_quality_face(det, frame.shape)
                     if not ok:
                         face_labels.append((det, "low quality", (0, 165, 255)))
-                        continue
-                    if liveness_on:
-                        if det is biggest:
-                            if not biggest_is_live:
-                                face_labels.append((det, "checking liveness…", (0, 200, 255)))
-                                continue
-                        else:
-                            sf_ok, _ = LivenessChecker.single_frame_check(frame, det)
-                            if not sf_ok:
-                                face_labels.append((det, "checking liveness…", (0, 200, 255)))
-                                continue
-                    aligned = align_face(frame, det.landmarks)
-                    emb = self.pipe.embed(aligned)
-                    idx, score, runner_up = cosine_match(emb, matrix)
-                    if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
-                        if self.learner.maybe_add(
-                            emp_ids[idx], names[idx], emb, score, runner_up,
-                        ):
-                            emp_ids, names, matrix = self.db.load_all()
-                        pending_greets.append(
-                            (emp_ids[idx], names[idx], det, score)
-                        )
-                        face_labels.append((
-                            det, f"{names[idx]}  {score:.2f}", (0, 255, 0),
-                        ))
+                    elif liveness_on and not biggest_is_live:
+                        face_labels.append(
+                            (det, "checking liveness…", (0, 200, 255)))
                     else:
-                        face_labels.append((det, "Unknown", (0, 255, 255)))
-                        if det is biggest:
+                        aligned = align_face(frame, det.landmarks)
+                        emb = self.pipe.embed(aligned)
+                        idx, score, runner_up = cosine_match(emb, matrix)
+                        if idx >= 0 and score >= config.COSINE_MATCH_THRESHOLD:
+                            if self.learner.maybe_add(
+                                emp_ids[idx], names[idx], emb, score, runner_up,
+                            ):
+                                emp_ids, names, matrix = self.db.load_all()
+                            pending_greets.append(
+                                (emp_ids[idx], names[idx], det, score)
+                            )
+                            face_labels.append((
+                                det, f"{names[idx]}  {score:.2f}", (0, 255, 0),
+                            ))
+                        else:
+                            face_labels.append((det, "Unknown", (0, 255, 255)))
                             biggest_quality_unknown = True
 
             # Publish to MJPEG. Overlays only when we actually ran
