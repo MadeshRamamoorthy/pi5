@@ -147,7 +147,10 @@ class WakeWordListener:
             self._queue.put(bytes(indata))
 
     def _run(self) -> None:
-        block = max(1, int(self.native_rate / 2))  # ~500 ms blocks
+        # ~200 ms blocks: feed Vosk often enough that it detects the
+        # end-of-phrase silence (and fires the wake) promptly, instead of
+        # lagging up to half a second behind on big 500 ms blocks.
+        block = max(1, int(self.native_rate * 0.2))
         while not self._stop.is_set():
             # While paused, release the mic and idle.
             if self._paused.is_set():

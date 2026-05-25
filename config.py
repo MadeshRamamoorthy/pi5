@@ -173,11 +173,10 @@ AI_LAB_ABOUT = (
 CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
 WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
 # Aliases also accepted by the wake-word grammar. We accept the short
-# "hello echo" alongside the full "hello echo scope" -- the small Vosk
-# model is more reliable on the shorter phrase, and both are natural to
-# say. (Dropped "echo scope" / "hey echo" so the wake phrase is exactly
-# one of these two.)
-WAKE_WORD_ALIASES = ["hello echo"]
+# "hello echo" / "hi echo" alongside the full "hello echo scope" -- the
+# small Vosk model is more reliable on the shorter phrases, and all are
+# natural to say.
+WAKE_WORD_ALIASES = ["hello echo", "hi echo"]
 WAKE_WORD_SAMPLERATE = 16000
 WAKE_WORD_BLOCKSIZE = 8000
 # Drop back to IDLE this long after the last *interaction* (a new person
