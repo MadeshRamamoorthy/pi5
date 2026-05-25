@@ -192,7 +192,7 @@ CHAT_KEEPALIVE_SEC = 180
 # After a chat conversation goes quiet for this long, the kiosk speaks a
 # friendly sign-off (by name) and returns to the dashboard, ready for the
 # next person to start fresh.
-CHAT_IDLE_GOODBYE_SEC = 30
+CHAT_IDLE_GOODBYE_SEC = 60
 
 # Phrases that end the chat session without calling the LLM. Matched
 # against the bottom of the transcribed user utterance (case-insensitive,
