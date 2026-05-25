@@ -480,7 +480,9 @@ CHAT_VOICE_MAX_SEC = 12.0           # hard cap on a single utterance.
 # nudges them ("please speak when you're ready"), then the normal
 # chat-idle goodbye takes over.
 CHAT_VOICE_NO_SPEECH_SEC = 30.0
-CHAT_VOICE_SILENCE_SEC = 0.6        # auto-finalise after this much silence.
+CHAT_VOICE_SILENCE_SEC = 1.2        # auto-finalise after this much trailing
+                                    # silence. Generous so a natural pause
+                                    # mid-question doesn't truncate it.
 CHAT_VOICE_SILENCE_RMS = 600        # int16 RMS threshold below which audio
                                     # counts as silence. Raised from 350 --
                                     # the PowerConf picks up enough ambient

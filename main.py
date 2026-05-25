@@ -251,10 +251,18 @@ def _is_ai_lab_query(text: str) -> bool:
         return False
     if (words & _TOOL_NOUNS) or (words & _SESSION_NOUNS) or (words & _PROJECT_NOUNS):
         return False
+    # Scheduling cues -> that's a session question, not "about the lab".
+    if any(p in t for p in ("coming up", "upcoming", "what's next",
+                            "whats next", "next session", "scheduled",
+                            "schedule", "when is", "when's")):
+        return False
     return any(p in t for p in (
         "what is", "what's", "whats", "what are", "tell me about", "about",
         "special", "motive", "purpose", "mission", "goal", "why",
         "what does", "what do", "what happens", "explain", "who",
+        "how can", "how does", "how do", "help", "can help", "what can",
+        "get involved", "join", "use the lab", "do in the lab", "do here",
+        "all about",
     ))
 
 
