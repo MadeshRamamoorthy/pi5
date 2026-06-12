@@ -174,9 +174,10 @@ AI_LAB_ABOUT = (
 # / "any message for the team / all-hands / town hall?". Routed locally
 # (no LLM, no budget slot), so the wording here is exactly what ECHO says.
 STAFF_MEETING_MESSAGE = (
-    "A warm welcome to our executive leaders from ECHO SCOPE. Hope you are "
-    "having a lovely time. We are living in an exciting time of AI, and I "
-    "hope you visit us in Infosys Calgary to experience our AI journey."
+    "A warm welcome to our executive leaders from ECHO SCOPE. We hope your "
+    "meeting is going wonderfully. This is an extraordinary time for AI — "
+    "and we'd be delighted to host you at Infosys Calgary. Come visit us "
+    "and experience our AI journey first-hand."
 )
 CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
 WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
