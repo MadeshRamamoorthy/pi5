@@ -266,6 +266,21 @@ def _is_ai_lab_query(text: str) -> bool:
     ))
 
 
+def _is_staff_meeting_query(text: str) -> bool:
+    """True for "do you have a message for the staff meeting?" and similar
+    phrasings (team meeting / all-hands / town hall / msg-for-the-meeting).
+    Answered locally from config.STAFF_MEETING_MESSAGE, no LLM call."""
+    t = (text or "").lower()
+    return any(p in t for p in (
+        "staff meeting", "team meeting", "all hands", "all-hands",
+        "town hall",
+        "msg for the staff", "msg for the team", "msg for the meeting",
+        "message for the staff", "message for the team",
+        "message for the meeting", "staff msg", "team msg",
+        "message for staff", "message for team",
+    ))
+
+
 # ---------- silent learning -----------------------------------------------
 
 
@@ -1214,6 +1229,16 @@ class CameraWorker(threading.Thread):
                 print("[chat] ai-lab intent -> lab blurb", flush=True)
                 self._append_chat("assistant", blurb)
                 self.greeter.say(blurb)
+                self._last_chat_at = time.time()
+                return
+        # "Do you have a message for the staff meeting?" -> canned reply.
+        if _is_staff_meeting_query(question):
+            msg = getattr(config, "STAFF_MEETING_MESSAGE", "").strip()
+            if msg:
+                print("[chat] staff-meeting intent -> canned message",
+                      flush=True)
+                self._append_chat("assistant", msg)
+                self.greeter.say(msg)
                 self._last_chat_at = time.time()
                 return
         # One question is about at most one of: the developed-solutions

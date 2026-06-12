@@ -170,6 +170,13 @@ AI_LAB_ABOUT = (
     "building something new or just getting started, ECHO is where intent "
     "meets action."
 )
+# Spoken when a visitor asks "do you have a message for the staff meeting?"
+# / "any message for the team / all-hands / town hall?". Routed locally
+# (no LLM, no budget slot), so the wording here is exactly what ECHO says.
+STAFF_MEETING_MESSAGE = (
+    "Hi team! Have a great staff meeting — keep building, learning, and "
+    "shaping the future of AI together at ECHO."
+)
 CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
 WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
 # Aliases also accepted by the wake-word grammar. We accept the short
