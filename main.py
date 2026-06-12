@@ -959,9 +959,36 @@ def main():
             cv2.destroyAllWindows()
 
 
+def _is_staff_meeting_query(text: str) -> bool:
+    """True for "do you have a message for the staff meeting?" and similar
+    phrasings (team meeting / all-hands / town hall / msg-for-the-meeting).
+    Answered locally from config.STAFF_MEETING_MESSAGE, no LLM call."""
+    t = (text or "").lower()
+    return any(p in t for p in (
+        "staff meeting", "team meeting", "all hands", "all-hands",
+        "town hall",
+        "msg for the staff", "msg for the team", "msg for the meeting",
+        "message for the staff", "message for the team",
+        "message for the meeting", "staff msg", "team msg",
+        "message for staff", "message for team",
+    ))
+
+
 def _submit_chat(panel: RightPanel, chat: ChatClient, emp_id: str,
                  question: str) -> None:
     panel.chat_history.append(("user", question))
+    # Static-reply intercept: "do you have a msg for the staff meeting?"
+    # gets the canned message from config (no LLM, no budget slot). Routed
+    # through a pre-resolved Future so the existing polling path picks it
+    # up, appends it to the transcript, and speaks it like any other reply.
+    if _is_staff_meeting_query(question):
+        msg = (getattr(config, "STAFF_MEETING_MESSAGE", "") or "").strip()
+        if msg:
+            f: Future = Future()
+            f.set_result(msg)
+            panel.chat_pending_future = f
+            panel.chat_pending_started_at = time.time()
+            return
     if chat.budget.remaining(emp_id) <= 0:
         panel.chat_history.append((
             "assistant",

@@ -223,3 +223,13 @@ LIVENESS_MIN_TEXTURE_VAR = 60.0
 LIVENESS_REL_MOTION_MIN = 0.45    # pixels (std), in original-image scale
 # 2. face-region pixel jitter beyond camera read noise.
 LIVENESS_PIXEL_JITTER_MIN = 4.0   # mean abs frame-to-frame diff in [0..255]
+
+# ---- Static chat replies --------------------------------------------------
+# Spoken when a visitor asks something like "do you have a message for the
+# staff meeting?" / "any message for the team?" / "msg for all hands?"
+# Routed locally (no LLM), so the wording here is exactly what ECHO will say.
+# Edit freely to suit the occasion.
+STAFF_MEETING_MESSAGE = (
+    "Hi team! Have a great staff meeting -- keep building, learning, and "
+    "shaping the future of AI together at ECHO."
+)
