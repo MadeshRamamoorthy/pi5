@@ -268,16 +268,31 @@ def _is_ai_lab_query(text: str) -> bool:
 
 def _is_staff_meeting_query(text: str) -> bool:
     """True for "do you have a message for the staff meeting?" and similar
-    phrasings (team meeting / all-hands / town hall / msg-for-the-meeting).
-    Answered locally from config.STAFF_MEETING_MESSAGE, no LLM call."""
+    phrasings: team meeting / all-hands / town hall / msg-for-the-meeting,
+    plus "e staff" (the Whisper transcription artefact when "the" is dropped
+    to "e", as in "message for e staff members watching us today"), "staff
+    members", "watching us", etc. Answered locally from
+    config.STAFF_MEETING_MESSAGE, no LLM call."""
     t = (text or "").lower()
     return any(p in t for p in (
+        # explicit meeting / event nouns
         "staff meeting", "team meeting", "all hands", "all-hands",
         "town hall",
+        # "the staff" / "e staff" + members (covers the ASR "e staff" case)
+        "e staff", "staff members", "staff member",
+        "team members", "team member", "executive staff",
+        "executive team", "leadership team", "leadership members",
+        # audience cues commonly paired with "message for ..."
+        "watching us", "watching today",
+        # msg/message for ... variants
         "msg for the staff", "msg for the team", "msg for the meeting",
+        "msg for e staff", "msg for staff", "msg for team",
         "message for the staff", "message for the team",
-        "message for the meeting", "staff msg", "team msg",
+        "message for the meeting", "message for e staff",
         "message for staff", "message for team",
+        "message for executives", "message for the executives",
+        "message for the leaders", "message for leaders",
+        "staff msg", "team msg",
     ))
 
 
