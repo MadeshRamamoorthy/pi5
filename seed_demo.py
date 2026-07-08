@@ -19,7 +19,7 @@ from set_projects import PROJECTS
 # Mirror the authoritative project list (set_projects.py) so a fresh
 # seed and an explicit reset show the same thing. seed_demo is additive
 # (skips existing titles); use set_projects.py to REPLACE the list.
-DEFAULT_PROJECTS = [(title, desc) for title, desc, _ordering in PROJECTS]
+DEFAULT_PROJECTS = list(PROJECTS)  # already (title, description) tuples
 
 
 def upcoming_session():

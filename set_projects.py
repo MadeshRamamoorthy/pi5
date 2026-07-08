@@ -8,8 +8,9 @@ answer reflect it immediately (next idle-data refresh, ~5 s).
 
     python set_projects.py
 
-Edit PROJECTS to change what's shown. Each entry is
-(title, description, ordering); lower ordering shows first.
+Edit PROJECTS to change what's shown. Each entry is (title, description);
+the ordering is taken from the list index, so just re-arrange the lines
+to reorder the dashboard card.
 """
 
 from __future__ import annotations
@@ -19,18 +20,17 @@ from database import FaceDB
 
 # The single source of truth for what's "on display today". seed_demo.py
 # imports this so a fresh install and an explicit reset stay in sync.
+# Order in the list == order on the dashboard.
 PROJECTS = [
-    ("Digital Quality Railcar Passport",
-     "IoT-driven potash quality control and railcar traceability.",
-     1),
-    ("Business Incubator",
-     "AI-powered tool for airline smart troubleshooting & automated "
-     "operation support; TrustLayer AI, an enterprise AI reliability "
-     "platform; and Gov Cycle, reclaiming lost assets.",
-     2),
-    ("AWS COE", "", 3),
-    ("Resources COE", "", 4),
-    ("Locally Developed Apps", "", 5),
+    ("Railcar Passport AIoT Model", ""),
+    ("AI Contract Lifecycle Management", ""),
+    ("Cobalt Migration Accelerator (Transform Hub)", ""),
+    ("DB Migration", ""),
+    ("FinOps and Compliance", ""),
+    ("AWS AI Ops", ""),
+    ("AI-Powered Smart Plant Maintenance Management (Connected Ops)", ""),
+    ("PowerBI Usage Analytics", ""),
+    ("Databricks Platform Strategy & Enterprise Data Hub", ""),
 ]
 
 
@@ -40,11 +40,11 @@ def main():
         existing = db.list_projects()
         for row in existing:
             db.delete_project(row[0])
-        for title, desc, ordering in PROJECTS:
+        for ordering, (title, desc) in enumerate(PROJECTS, start=1):
             db.add_project(title, desc, ordering)
         print(f"projects: removed {len(existing)}, inserted {len(PROJECTS)}")
-        for title, _desc, ordering in PROJECTS:
-            print(f"  {ordering}. {title}")
+        for i, (title, _desc) in enumerate(PROJECTS, start=1):
+            print(f"  {i}. {title}")
     finally:
         db.close()
 
