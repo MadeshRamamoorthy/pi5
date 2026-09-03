@@ -367,8 +367,7 @@ AI_LAB_SESSIONS_COMPLETED = [
     "MCP Servers",
 ]
 AI_LAB_SESSIONS_PLANNED = [
-    ("Build MCP Servers (hands-on)", "May 29th"),
-    ("Agentic AI", "June 5th"),
+    ("Claude Certified Associate - Foundation", "September 12th at 2:54 PM"),
 ]
 
 # Headline count quoted for "how many tools/solutions?" questions and the

@@ -22,12 +22,9 @@ from database import FaceDB
 
 
 SESSIONS = [
-    ("Build MCP Servers (hands-on)",
-     "2026-05-29 17:00:00", "2026-05-29 18:00:00",
-     "Hands-on workshop."),
-    ("Agentic AI",
-     "2026-06-05 17:00:00", "2026-06-05 18:00:00",
-     ""),
+    ("Claude Certified Associate - Foundation",
+     "2026-09-12 14:54:00", "2026-09-12 14:54:00",
+     "Prep session for CCAO-F certificate"),
 ]
 
 
