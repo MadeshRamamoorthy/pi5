@@ -42,15 +42,16 @@
       </div>
     </div>
 
-    <!-- Tap-to-introduce Leon (sibling AI persona). Replace the emoji
-         inside .leon-logo with an <img src="/static/leon-logo.png"> when
-         the real logo asset is ready. -->
+    <!-- Tap-to-introduce Leon, the Infosys AI Mascot. -->
     <div class="leon-row">
       <button type="button" id="leon-intro-btn" class="card glass leon-card"
-              aria-label="Meet Leon">
-        <span class="leon-logo" aria-hidden="true">🫖</span>
+              aria-label="Meet Leon, the Infosys AI Mascot">
+        <span class="leon-logo" aria-hidden="true">
+          <img src="{{ url_for('static', filename='leon-mascot.webp') }}"
+               alt="Leon, the Infosys AI Mascot">
+        </span>
         <span class="leon-body">
-          <span class="leon-title">Meet Leon <span class="leon-sub">· Infosys</span></span>
+          <span class="leon-title">Meet Leon <span class="leon-sub">· Infosys AI Mascot</span></span>
           <span class="leon-hint">Tap to hear about him</span>
         </span>
       </button>

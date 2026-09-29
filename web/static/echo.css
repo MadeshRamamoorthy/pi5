@@ -881,14 +881,26 @@ body[data-listening="true"] .camera-placeholder { display: none; }
   outline: none;
 }
 .leon-logo {
-  font-size: 40px;
-  line-height: 1;
-  filter: drop-shadow(0 0 6px var(--accent-30));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%,
+              rgba(255,255,255,0.10),
+              rgba(0,212,255,0.06) 60%,
+              transparent 100%);
+  border: 1px solid var(--accent-30);
+  box-shadow: 0 0 18px var(--accent-30);
+  overflow: hidden;
+  flex-shrink: 0;
 }
-.leon-logo img {              /* swap the emoji for <img> when a real logo lands */
-  width: 44px;
-  height: 44px;
-  object-fit: contain;
+.leon-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;      /* fill the circle with the mascot, cropping edges */
+  object-position: center 20%;  /* keep his face in the middle */
   display: block;
 }
 .leon-body { display: flex; flex-direction: column; gap: 2px; }
