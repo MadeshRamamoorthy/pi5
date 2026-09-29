@@ -45,7 +45,6 @@ def create_app(
             brand=getattr(config, "BRAND_NAME", "ECHO SCOPE"),
             wake_phrase=getattr(config, "WAKE_WORD", "hello echo scope"),
             contact=getattr(config, "CONTACT_EMAIL", ""),
-            game_enabled=bool(getattr(config, "EMOTION_GAME_ENABLED", False)),
         )
 
     # -------- state feed --------------------------------------------------
@@ -130,31 +129,5 @@ def create_app(
         cool down the auto-pop trigger so we don't immediately re-open."""
         request_register_skip()
         return ("", 204)
-
-    # -------- facial-expression game (AWS Rekognition) --------------------
-    # Lazily create the emotion client the first time /api/game/snap is
-    # hit, so the app boots even when AWS creds are missing.
-    game_client = {"c": None}
-
-    @app.route("/api/game/snap", methods=["POST"])
-    def api_game_snap():
-        """Body: multipart form field 'frame' = JPEG bytes of the current
-        camera frame captured client-side. Returns Rekognition's top
-        emotion + full confidence map for the game overlay to render."""
-        if not getattr(config, "EMOTION_GAME_ENABLED", False):
-            return jsonify({"ok": False, "error": "game disabled"}), 403
-        f = request.files.get("frame")
-        if not f:
-            return jsonify({"ok": False, "error": "no frame in request"}), 400
-        blob = f.read()
-        if not blob:
-            return jsonify({"ok": False, "error": "empty frame"}), 400
-        if game_client["c"] is None:
-            from emotion_cloud import make_client
-            game_client["c"] = make_client()
-            if game_client["c"] is None:
-                return jsonify({"ok": False,
-                                "error": "emotion client unavailable"}), 503
-        return jsonify(game_client["c"].detect(blob))
 
     return app

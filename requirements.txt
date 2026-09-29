@@ -17,4 +17,3 @@ faster-whisper>=1.0.0
 # Note: piper-tts (piper1-gpl) only ships wheels for cp38..cp312 today.
 #       On Python 3.13 the requirement above is silently skipped; the
 #       app then uses the CLI piper binary (also in §2.9) instead.
-boto3>=1.34
