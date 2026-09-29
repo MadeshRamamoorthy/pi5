@@ -370,8 +370,10 @@ class Greeter:
             return False
         self._last_greeted[emp_id] = now
         welcome = self._pick_welcome(emp_id, name)
+        leon = getattr(config, "LEON_INTRODUCTION", "").strip()
         tap = getattr(config, "GREET_TAP_PROMPT", "").strip()
-        msg = f"{welcome} {tap}".strip() if tap else welcome
+        # Order: personal welcome -> Leon introduction -> tap-to-speak prompt.
+        msg = " ".join(p for p in (welcome, leon, tap) if p)
         print(f"[GREET] {msg}", flush=True)
         # Push the toast + person state from the TTS worker thread so
         # the UI update lands exactly when audio starts playing, not

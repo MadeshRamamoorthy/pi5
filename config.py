@@ -32,6 +32,17 @@ COSINE_MATCH_THRESHOLD = 0.42  # ArcFace: 0.35-0.45 typical; lower => looser mat
 GREET_COOLDOWN_SEC = 60
 # Appended to a recognised person's greeting so they know how to start
 # talking. Set to "" to disable.
+# Spoken after the personal welcome and BEFORE GREET_TAP_PROMPT --
+# introduces Leon (the sibling AI persona) to every recognised visitor
+# so they know he exists. Set to "" to disable.
+LEON_INTRODUCTION = (
+    "I would like you to meet Leon -- think of him as my distant cousin. "
+    "He was born on Enterprise AI Mountain, and he guides the world's top "
+    "executives across the entire terrain of enterprise AI -- connecting "
+    "data, systems, and processes into one clear path. We have the same "
+    "Infosys family mission. Also, he drinks English Breakfast tea and "
+    "loves tennis -- a bit fancier than me, but we look out for each other."
+)
 GREET_TAP_PROMPT = "Tap to speak to chat with me!"
 
 # Camera
