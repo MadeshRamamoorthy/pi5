@@ -42,20 +42,17 @@
       </div>
     </div>
 
-    <!-- Tap-to-introduce Leon, the Infosys AI Mascot. -->
-    <div class="leon-row">
-      <button type="button" id="leon-intro-btn" class="card glass leon-card"
-              aria-label="Meet Leon, the Infosys AI Mascot">
-        <span class="leon-logo" aria-hidden="true">
-          <img src="{{ url_for('static', filename='leon-mascot.webp') }}"
-               alt="Leon, the Infosys AI Mascot">
-        </span>
-        <span class="leon-body">
-          <span class="leon-title">Meet Leon <span class="leon-sub">· Infosys AI Mascot</span></span>
-          <span class="leon-hint">Tap to hear about him</span>
-        </span>
-      </button>
-    </div>
+    <!-- Static Leon poster on the left side of the idle screen. Non-
+         interactive; his introduction is spoken as part of each recognised
+         person's greeting. -->
+    <figure class="leon-poster" aria-label="Leon, the Infosys AI Mascot">
+      <img src="{{ url_for('static', filename='leon-mascot.webp') }}"
+           alt="Leon, the Infosys AI Mascot">
+      <figcaption class="leon-poster-caption">
+        <span class="leon-poster-name">Leon</span>
+        <span class="leon-poster-role">Infosys AI Mascot</span>
+      </figcaption>
+    </figure>
 
     <div class="stat-row">
       <div class="card glass weather-card">
