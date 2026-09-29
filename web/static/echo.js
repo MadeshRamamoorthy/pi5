@@ -288,7 +288,12 @@
     el.textContent = t.text;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+    // Keep the toast visible for roughly as long as the audio speaks it.
+    // Piper reads ~14 chars/sec (~70 ms/char); we use 90 ms/char with a
+    // 5 s floor and a 2 min ceiling so short toasts don't linger and
+    // long greetings (welcome + Leon intro) don't get cut off half-way.
+    const ms = Math.min(120000, Math.max(5000, (t.text.length || 0) * 90));
+    toastTimer = setTimeout(() => { el.hidden = true; }, ms);
   }
 
   // ---- register pose ----------------------------------------------------

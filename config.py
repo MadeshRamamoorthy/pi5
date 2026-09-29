@@ -36,12 +36,12 @@ GREET_COOLDOWN_SEC = 60
 # introduces Leon (the sibling AI persona) to every recognised visitor
 # so they know he exists. Set to "" to disable.
 LEON_INTRODUCTION = (
-    "I would like you to meet Leon -- think of him as my distant cousin. "
-    "He was born on Enterprise AI Mountain, and he guides the world's top "
-    "executives across the entire terrain of enterprise AI -- connecting "
-    "data, systems, and processes into one clear path. We have the same "
-    "Infosys family mission. Also, he drinks English Breakfast tea and "
-    "loves tennis -- a bit fancier than me, but we look out for each other."
+    "I would like you to meet Leon, Infosys AI Mascot and my distant "
+    "cousin. He was born on Enterprise AI Mountain, and he guides the "
+    "world's top executives across the entire terrain of enterprise AI -- "
+    "connecting data, systems, and processes into one clear path. Also, "
+    "he drinks English Breakfast tea and loves tennis -- a bit fancier "
+    "than me, but we look out for each other."
 )
 GREET_TAP_PROMPT = "Tap to speak to chat with me!"
 
