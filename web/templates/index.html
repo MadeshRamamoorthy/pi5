@@ -42,6 +42,18 @@
       </div>
     </div>
 
+    {% if game_enabled %}
+    <div class="game-cta-row">
+      <button type="button" id="game-start-btn" class="card glass game-cta">
+        <span class="game-cta-emoji" aria-hidden="true">🎮</span>
+        <span class="game-cta-body">
+          <span class="game-cta-title">Play the Facial Expression Game!</span>
+          <span class="game-cta-hint">Tap to start · 5 rounds · about a minute</span>
+        </span>
+      </button>
+    </div>
+    {% endif %}
+
     <div class="stat-row">
       <div class="card glass weather-card">
         <span class="weather-sun" aria-hidden="true">
@@ -268,6 +280,54 @@
       </div>
     </div>
   </section>
+
+{% if game_enabled %}
+<!-- Facial Expression Game overlay (independent of ACTIVE/IDLE state;
+     lives at the app root so it can render over either screen). -->
+<div id="game-overlay" class="overlay game-overlay" hidden>
+  <div class="game-stage">
+    <div class="game-top">
+      <span class="game-round">Round <span id="game-round-num">1</span> / 5</span>
+      <span class="game-score">Score: <span id="game-score-num">0</span></span>
+      <button type="button" id="game-exit" class="close-x" aria-label="Exit game">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="game-prompt">
+      <span id="game-prompt-emoji" class="game-prompt-emoji" aria-hidden="true">😊</span>
+      <span id="game-prompt-text" class="game-prompt-text">SHOW ME A HAPPY FACE</span>
+    </div>
+
+    <div class="game-camera-frame">
+      <img id="game-camera" alt="live camera" />
+      <div id="game-countdown" class="game-countdown" hidden></div>
+      <div id="game-snap-flash" class="game-snap-flash" hidden></div>
+    </div>
+
+    <div id="game-result" class="game-result" hidden>
+      <div id="game-result-text" class="game-result-text"></div>
+      <button type="button" id="game-next" class="game-btn game-btn-primary">Next round</button>
+    </div>
+
+    <div id="game-final" class="game-final" hidden>
+      <div id="game-final-text" class="game-final-text"></div>
+      <div class="game-final-actions">
+        <button type="button" id="game-play-again" class="game-btn game-btn-primary">Play again</button>
+        <button type="button" id="game-final-exit" class="game-btn">Back to dashboard</button>
+      </div>
+    </div>
+
+    <p class="game-consent">
+      Your face is sent to AWS Rekognition to detect the expression.
+      AWS doesn't store the image.
+    </p>
+  </div>
+</div>
+{% endif %}
 
 </main>
 

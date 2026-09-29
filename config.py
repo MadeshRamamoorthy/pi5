@@ -179,6 +179,16 @@ STAFF_MEETING_MESSAGE = (
     "and we'd be delighted to host you at Infosys Calgary. Come visit us "
     "and experience our AI journey first-hand."
 )
+# ---- Facial-expression game (AWS Rekognition) ----------------------------
+# Set EMOTION_GAME_ENABLED=true (env or here) to turn the idle-screen game
+# button on. Needs AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in .env with
+# Rekognition:DetectFaces permission. Region defaults to ca-central-1
+# (Rekognition is available there).
+EMOTION_GAME_ENABLED = os.environ.get("EMOTION_GAME_ENABLED", "true").lower() in (
+    "1", "true", "yes",
+)
+AWS_REGION = os.environ.get("AWS_REGION", "ca-central-1")
+
 CONTACT_EMAIL = "Calgary_AIClub@infosys.com"
 WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
 # Aliases also accepted by the wake-word grammar. We accept the short
