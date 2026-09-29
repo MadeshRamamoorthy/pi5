@@ -370,10 +370,10 @@ class Greeter:
             return False
         self._last_greeted[emp_id] = now
         welcome = self._pick_welcome(emp_id, name)
-        leon = getattr(config, "LEON_INTRODUCTION", "").strip()
         tap = getattr(config, "GREET_TAP_PROMPT", "").strip()
-        # Order: personal welcome -> Leon introduction -> tap-to-speak prompt.
-        msg = " ".join(p for p in (welcome, leon, tap) if p)
+        # Leon's introduction is NOT in the greeting -- it's spoken only
+        # when the visitor taps the "Meet Leon" logo on the idle screen.
+        msg = f"{welcome} {tap}".strip() if tap else welcome
         print(f"[GREET] {msg}", flush=True)
         # Push the toast + person state from the TTS worker thread so
         # the UI update lands exactly when audio starts playing, not
@@ -1495,6 +1495,16 @@ def main():
         if chat_voice is not None:
             chat_voice.stop()
 
+    def request_leon_intro():
+        """User tapped the 'Meet Leon' logo on the idle dashboard."""
+        text = getattr(config, "LEON_INTRODUCTION", "").strip()
+        if not text:
+            return
+        # Cut any in-flight TTS so Leon's line starts cleanly.
+        tts.interrupt()
+        print(f"[leon] intro requested", flush=True)
+        greeter.say(text)
+
     app = create_app(state, frames, db,
                      request_wake=request_wake,
                      request_idle=request_idle,
@@ -1502,7 +1512,8 @@ def main():
                      request_register_skip=request_register_skip,
                      request_chat=request_chat,
                      listen_start=listen_start,
-                     listen_stop=listen_stop)
+                     listen_stop=listen_stop,
+                     request_leon_intro=request_leon_intro)
 
     host = getattr(config, "KIOSK_HOST", "127.0.0.1")
     port = int(os.environ.get("KIOSK_PORT", getattr(config, "KIOSK_PORT", 8080)))

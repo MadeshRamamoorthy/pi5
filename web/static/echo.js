@@ -346,6 +346,13 @@
     if (state.state === "IDLE") post("/api/wake");
   });
 
+  // "Meet Leon" logo on the idle screen: speak the intro without waking
+  // the kiosk. stopPropagation prevents the tap-to-wake handler above.
+  document.getElementById("leon-intro-btn")?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    post("/api/leon/introduce");
+  });
+
   document.getElementById("close-active").addEventListener("click", (ev) => {
     ev.stopPropagation();
     // Tell the backend to drop to IDLE (clears chat history, resumes
