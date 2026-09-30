@@ -196,7 +196,11 @@ WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
 # "hello echo" / "hi echo" alongside the full "hello echo scope" -- the
 # small Vosk model is more reliable on the shorter phrases, and all are
 # natural to say.
-WAKE_WORD_ALIASES = ["hello echo", "hi echo"]
+# Dropped "hi echo": in production logs Vosk was finalising ambient
+# chatter as "hi echo ..." often enough to wake the kiosk to an empty
+# room. Keeping "hello echo" (still short) and the full "hello echo
+# scope" (via WAKE_WORD).
+WAKE_WORD_ALIASES = ["hello echo"]
 WAKE_WORD_SAMPLERATE = 16000
 WAKE_WORD_BLOCKSIZE = 8000
 # Drop back to IDLE this long after the last *interaction* (a new person
@@ -204,6 +208,11 @@ WAKE_WORD_BLOCKSIZE = 8000
 # recognised person who keeps standing in front of the camera does NOT
 # reset this timer -- 10 s after the last new event we sleep.
 IDLE_AFTER_LAST_INTERACTION_SEC = 30
+# If the kiosk wakes (voice or touch) but the camera detects NO face at
+# all for this many seconds, it closes silently back to the dashboard.
+# Handles false wakes -- Vosk mis-hearing ambient chatter as a wake
+# phrase -- so the kiosk doesn't sit ACTIVE talking to an empty room.
+NO_FACE_AUTO_IDLE_SEC = 5
 # While there's chat activity, keep the kiosk in ACTIVE mode for at
 # least this long after the last chat message. Gives the user time to
 # read the answer and ask a follow-up without the kiosk dropping out.

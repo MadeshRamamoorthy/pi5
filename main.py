@@ -542,6 +542,11 @@ class CameraWorker(threading.Thread):
         unknown_streak = 0
         last_interaction_at = time.time() if kiosk_state == "ACTIVE" else 0.0
         activated_at = time.time() if kiosk_state == "ACTIVE" else 0.0
+        # 0.0 until the camera detects any face in this ACTIVE session.
+        # If it stays 0.0 past NO_FACE_AUTO_IDLE_SEC, we assume the wake
+        # was a false positive (Vosk hearing ambient chatter) and quietly
+        # drop back to the dashboard.
+        last_face_seen_at = 0.0
         seen_in_session: set[str] = set()
         session_id = uuid.uuid4().hex[:12] if kiosk_state == "ACTIVE" else ""
         last_known_emp_id = "anon"
@@ -571,6 +576,7 @@ class CameraWorker(threading.Thread):
                 kiosk_state = "ACTIVE"
                 activated_at = time.time()
                 last_interaction_at = activated_at
+                last_face_seen_at = 0.0     # reset for the new session
                 seen_in_session = set()
                 session_id = uuid.uuid4().hex[:12]
                 self._session_primary = None
@@ -670,6 +676,10 @@ class CameraWorker(threading.Thread):
                 dets = self.pipe.detect(frame, config.DETECTOR_SCORE_THRESHOLD,
                                         config.DETECTOR_NMS_IOU)
                 biggest = largest_detection(dets)
+                # Note any face at all -- even before quality/liveness --
+                # so the no-face-after-wake auto-idle timer resets.
+                if biggest is not None and kiosk_state == "ACTIVE":
+                    last_face_seen_at = time.time()
 
             if kiosk_state == "ACTIVE" and not chat_busy:
                 # Liveness can be turned off entirely via config; when
@@ -810,6 +820,20 @@ class CameraWorker(threading.Thread):
                 idle_for = (time.time() - last_interaction_at) if last_interaction_at else 0
                 force_idle = self.idle_event.is_set()
 
+                # No-face-after-wake: if we've been ACTIVE for
+                # NO_FACE_AUTO_IDLE_SEC and the camera never saw anyone,
+                # this was almost certainly a false wake -- close silently.
+                # Suppressed while the user is engaged (register overlay,
+                # mic listening, chat pending) so an early tap-then-speak
+                # doesn't get cut off.
+                no_face_timeout = (
+                    not user_engaged
+                    and activated_at
+                    and last_face_seen_at == 0.0
+                    and (time.time() - activated_at)
+                        >= getattr(config, "NO_FACE_AUTO_IDLE_SEC", 5)
+                )
+
                 # While ECHO is still reading a chat reply aloud, hold the
                 # idle clock at "now" so the 30s goodbye window only starts
                 # once playback FINISHES -- not when the reply was queued.
@@ -836,7 +860,7 @@ class CameraWorker(threading.Thread):
                     self.greeter.say(farewell)
                     self._goodbye_exit = True
 
-                if (force_idle or self._goodbye_exit
+                if (force_idle or self._goodbye_exit or no_face_timeout
                         or idle_for >= config.IDLE_AFTER_LAST_INTERACTION_SEC
                         or (activated_at and time.time() - activated_at >= config.ACTIVE_SESSION_MAX_SEC)):
                     if force_idle:
@@ -864,6 +888,7 @@ class CameraWorker(threading.Thread):
                     if self.listener is not None:
                         self.listener.resume()
                     reason = ("user closed" if force_idle
+                              else "no face after wake" if no_face_timeout
                               else "chat idle goodbye" if graceful
                               else f"idle {idle_for:.0f}s")
                     print(f"[state] ACTIVE -> IDLE ({reason}, "
