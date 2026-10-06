@@ -35,7 +35,7 @@ GREET_COOLDOWN_SEC = 60
 # Spoken after the personal welcome and BEFORE GREET_TAP_PROMPT --
 # introduces Leon (the sibling AI persona) to every recognised visitor
 # so they know he exists. Set to "" to disable.
-LEON_INTRODUCTION = "I am the distant cousin of Leon, the Infosys AI Mascot."
+LEON_INTRODUCTION = "I am my distant cousin of Leon, Infosys AI Mascot."
 GREET_TAP_PROMPT = "Tap to speak to chat with me!"
 
 # Camera
