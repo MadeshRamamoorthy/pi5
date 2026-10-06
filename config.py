@@ -196,11 +196,14 @@ WAKE_WORD = "hello echo scope"        # primary phrase shown in the UI
 WAKE_WORD_ALIASES = ["hello echo"]
 WAKE_WORD_SAMPLERATE = 16000
 WAKE_WORD_BLOCKSIZE = 8000
-# Drop back to IDLE this long after the last *interaction* (a new person
-# greeted, an unknown face in frame, or a registration completing). A
-# recognised person who keeps standing in front of the camera does NOT
-# reset this timer -- 10 s after the last new event we sleep.
-IDLE_AFTER_LAST_INTERACTION_SEC = 30
+# Drop back to IDLE this long after the last activity. ECHO speaking and
+# a face in front of the camera both count as activity, so this countdown
+# only starts once the greeting has finished AND the person has stepped
+# away (or there's no chat / registration / mic in progress).
+IDLE_AFTER_LAST_INTERACTION_SEC = 60
+# A face seen within this many seconds counts as "someone is still here"
+# and keeps the screen ACTIVE so they can start interacting.
+FACE_PRESENT_KEEPALIVE_SEC = 3
 # If the kiosk wakes (voice or touch) but the camera detects NO face at
 # all for this many seconds, it closes silently back to the dashboard.
 # Handles false wakes -- Vosk mis-hearing ambient chatter as a wake

@@ -810,10 +810,22 @@ class CameraWorker(threading.Thread):
                     and (time.time() - getattr(self, "_last_chat_at", 0))
                         <= config.CHAT_KEEPALIVE_SEC
                 )
+                # ECHO still speaking (greeting / reply) or a person still in
+                # front of the camera both count as engagement, so the idle
+                # timer can't cut a greeting off mid-sentence or drop someone
+                # who is standing there about to start talking.
+                tts_speaking = not self.tts.wait_idle(timeout=0)
+                face_present = bool(
+                    last_face_seen_at
+                    and time.time() - last_face_seen_at
+                        <= getattr(config, "FACE_PRESENT_KEEPALIVE_SEC", 3)
+                )
                 user_engaged = (
                     snap.get("register_open")
                     or snap.get("listening")
                     or chat_active
+                    or tts_speaking
+                    or face_present
                 )
                 if user_engaged:
                     last_interaction_at = time.time()
