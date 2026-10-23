@@ -126,7 +126,7 @@ sample cap. Duplicate names are only reported.
 - [ ] Reviewed the dry-run report
 - [ ] Applied the fixes
 - [ ] For each duplicate name, kept one ID and removed the rest: `python admin.py delete <id>`
-- [ ] Employee ID format matches the display system (`E0001`): admin → Employees → **Employee IDs → hologram format** → Preview → Apply (one-time; new registrations are numbered automatically)
+- [ ] Employee ID format matches the display system (e.g. `E0001`)
 - [ ] Exported `employees.csv` for the display-side DB alignment
 
 ---
@@ -294,24 +294,6 @@ The exit code tells you how it went:
       once (`[hologram] back-filled photo for ...` in the log)
 - [ ] `start.sh` prints `hologram : syncing pending employees` at launch
 - [ ] Switched `.env` to the real hologram URL and key
-
-**Admin screen** (`http://<pi>:8081/`, start with `./start_admin.sh`):
-
-- [ ] **New employee:** on "Register from photo", enter a name, attach a
-      photo, upload. The message says "Sent to the hologram app" and the
-      mock shows the person with their photo
-- [ ] **Existing employee:** Employees tab, Edit. The dialog shows the
-      current photo, or "No photo yet". Choose a photo, Upload photo. The
-      message says "Photo saved ... Sent to the hologram app" and the mock
-      receives it
-- [ ] Untick "Also use for face recognition" to change only the photo
-      the hologram app gets, without touching recognition
-- [ ] Upload someone else's photo by mistake: it is refused with "This
-      face doesn't look like ...". "Upload anyway" overrides it
-- [ ] With the mock stopped, upload a photo: the message says the
-      hologram app is offline, and the person is sent later by the kiosk
-      retry or the next start-up sync
-- [ ] Renaming someone in Edit and saving re-sends them in the background
 
 Settings: `HOLOGRAM_SYNC_ON_START=0` skips the start-up sync.
 `HOLOGRAM_RETRY_SEC=0` turns off the in-kiosk retry.

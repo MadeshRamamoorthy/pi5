@@ -17,12 +17,6 @@
     width: 100%; padding: 4px 8px; font-size: 14px; box-sizing: border-box; }
   button { cursor: pointer; padding: 4px 12px; }
   .danger { color: #b00; }
-  .photo-yes { color: #1a7f37; font-weight: 600; }
-  .photo-no { color: #b00; }
-  #idmig-table input { width: 90px; font-family: monospace; text-transform: uppercase; }
-  #idmig-table tr.keep td { color: #888; }
-  #idmig-table tr.bad input { border-color: #b00; background: #fee; }
-  .idmig-banner { background: #fff7e0; border: 1px solid #f0d58c; padding: 8px 12px; border-radius: 6px; margin: 10px 0; }
   .empty { color: #888; padding: 24px; text-align: center; }
 
   /* tabs */
@@ -78,24 +72,6 @@
   .edit-card .form-actions { display: flex; gap: 8px; justify-content: flex-end;
                              margin-top: 16px; }
   .edit-card #edit-emp-id { background: #f0f0f0; color: #555; }
-  .edit-card .photo-box { margin-top: 14px; padding: 10px 12px;
-                          background: #f5f9fb; border-radius: 6px; font-size: 13px; }
-  .edit-card .photo-box strong { display: block; font-size: 11px; color: #2a9d8f;
-                                 text-transform: uppercase; letter-spacing: 0.04em; }
-  .edit-card .photo-row { display: flex; gap: 12px; align-items: flex-start;
-                          margin-top: 8px; flex-wrap: wrap; }
-  .edit-card .photo-row img { width: 96px; height: 96px; object-fit: cover;
-                              border-radius: 6px; background: #e6ecef; }
-  .edit-card .photo-row .no-photo { width: 96px; height: 96px; border-radius: 6px;
-                                    background: #e6ecef; color: #888; font-size: 12px;
-                                    display: flex; align-items: center;
-                                    justify-content: center; text-align: center; }
-  .edit-card .photo-controls { flex: 1; min-width: 200px; }
-  .edit-card .photo-controls label.inline { text-transform: none; letter-spacing: 0;
-                                            font-size: 13px; color: #333; margin-top: 6px; }
-  .edit-card .photo-controls .buttons { display: flex; gap: 8px; margin-top: 8px; }
-  .holo-ok { color: #1a7f37; }
-  .holo-warn { color: #b26b00; }
 </style>
 </head>
 <body>
@@ -149,7 +125,7 @@
 <h2>Employees (registered faces)</h2>
 <table id="employees-table">
   <thead><tr>
-    <th>ID</th><th>Name</th><th>Samples</th><th>Photo</th>
+    <th>ID</th><th>Name</th><th>Samples</th>
     <th>Profile URL</th><th>Welcome (custom or generated)</th><th></th>
   </tr></thead>
   <tbody></tbody>
@@ -161,30 +137,6 @@
   directly, or paste a bio URL and click "Regenerate" to have the LLM
   pull a one-liner from the page.
 </p>
-<div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid #eee;">
-  <h3 style="margin: 0 0 6px;">Employee IDs → hologram format (E0001)</h3>
-  <p class="sub" style="margin: 0 0 8px;">
-    One-time migration. Every employee gets an ID like <code>E0001</code> (capital E + 4 digits).
-    IDs already in that format are kept; the rest are numbered oldest first. Face samples,
-    photos, welcome lines and visit history move with the person. <b>Preview</b> changes nothing —
-    you can edit any new ID before applying (e.g. set Madesh to <code>E0001</code> to match the
-    hologram app). A full database backup is taken first. New registrations are numbered
-    automatically from then on.
-  </p>
-  <div id="idmig-banner" class="idmig-banner" hidden></div>
-  <button id="idmig-preview-btn" type="button">Preview migration</button>
-  <div id="idmig-panel" hidden style="margin-top: 10px;">
-    <table id="idmig-table">
-      <thead><tr><th>Name</th><th>Current ID</th><th>New ID</th><th>Why</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div style="margin-top: 10px;">
-      <button id="idmig-recalc-btn" type="button">Recalculate with my edits</button>
-      <button id="idmig-apply-btn" type="button">Apply migration</button>
-    </div>
-  </div>
-  <p id="idmig-status" class="sub" style="margin-top: 6px;"></p>
-</div>
 <div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid #eee;">
   <a href="/api/hologram/export.zip" download><button type="button">Download hologram ZIP</button></a>
   <a href="/api/hologram/export.zip?include_no_photo=1" download><button type="button">Download incl. people without photo</button></a>
@@ -217,23 +169,6 @@
       <label>Name
         <input type="text" id="edit-emp-name" required>
       </label>
-      <div class="photo-box">
-        <strong>Photo <span class="sub" style="text-transform:none;letter-spacing:0;">— sent to the hologram app</span></strong>
-        <div class="photo-row">
-          <img id="edit-emp-photo" alt="Current photo" hidden>
-          <div id="edit-emp-nophoto" class="no-photo">No photo yet</div>
-          <div class="photo-controls">
-            <input type="file" id="edit-emp-photo-file" accept="image/*" multiple>
-            <label class="inline"><input type="checkbox" id="edit-emp-photo-recog" checked>
-              Also use for face recognition</label>
-            <div class="buttons">
-              <button type="button" id="edit-emp-photo-upload">Upload photo</button>
-              <button type="button" id="edit-emp-photo-force" class="danger" hidden>Upload anyway</button>
-            </div>
-            <p id="edit-emp-photo-status" class="sub"></p>
-          </div>
-        </div>
-      </div>
       <label>Profile URL <span class="sub">— or paste their bio text below if the site blocks scrapers (403/404)</span>
         <textarea id="edit-emp-url" rows="3"
                   placeholder="https://example.com/about/their-page
@@ -324,8 +259,8 @@ recognises them next time they walk up.</p>
 <form id="photo-register-form" style="margin-top: 16px;">
   <table>
     <tr>
-      <td><input type="text" name="name" placeholder="Full name" required>
-        <p class="sub" style="margin-top: 4px;">The employee ID (E0001, E0002 …) is assigned automatically.</p></td>
+      <td style="width: 200px"><input type="text" name="emp_id" placeholder="Employee ID" required></td>
+      <td><input type="text" name="name" placeholder="Full name" required></td>
     </tr>
     <tr>
       <td colspan="2">
@@ -357,19 +292,10 @@ async function refresh() {
   try {
     const employees = await fetch("/api/employees").then(r => r.json());
     window.__lastEmployees = employees;
-    const legacy = employees.filter(e => !e.id_ok).length;
-    const banner = document.getElementById("idmig-banner");
-    if (legacy) {
-      banner.hidden = false;
-      banner.textContent = `${legacy} of ${employees.length} employee IDs are not in the E0001 format. ` +
-        `Use "Preview migration" below to fix them.`;
-    } else {
-      banner.hidden = true;
-    }
     const etb = document.querySelector("#employees-table tbody");
     etb.innerHTML = "";
     if (!employees.length) {
-      etb.innerHTML = '<tr><td colspan="7" class="empty">No employees registered yet.</td></tr>';
+      etb.innerHTML = '<tr><td colspan="6" class="empty">No employees registered yet.</td></tr>';
     } else for (const e of employees) {
       const tr = document.createElement("tr");
       const url = (e.profile_url || "").trim();
@@ -388,7 +314,6 @@ async function refresh() {
       tr.innerHTML = `<td><code>${escape(e.emp_id)}</code></td>
         <td>${escape(e.name)}<br><span class="sub">${e.samples} samples</span></td>
         <td>${e.samples}</td>
-        <td>${e.has_photo ? '<span class="photo-yes" title="Face photo stored">✓ Yes</span>' : '<span class="photo-no" title="No photo yet — saved the next time this person is recognised or registered">✗ No</span>'}</td>
         <td>${urlCell}</td>
         <td>${welcomeCell}</td>
         <td>
@@ -561,72 +486,8 @@ function openEmpEdit(emp_id) {
   document.getElementById("edit-emp-cache").textContent =
       emp.welcome_cache || "— none yet —";
   document.getElementById("edit-emp-status").textContent = "";
-  document.getElementById("edit-emp-photo-file").value = "";
-  document.getElementById("edit-emp-photo-status").textContent = "";
-  document.getElementById("edit-emp-photo-force").hidden = true;
-  showEmpPhoto(emp.emp_id, emp.has_photo);
   document.getElementById("employee-edit-modal").hidden = false;
 }
-function showEmpPhoto(emp_id, has) {
-  const img = document.getElementById("edit-emp-photo");
-  const none = document.getElementById("edit-emp-nophoto");
-  img.hidden = !has;
-  none.hidden = !!has;
-  if (has) img.src = `/api/employees/${encodeURIComponent(emp_id)}/photo.jpg?t=${Date.now()}`;
-}
-// What happened on the hologram side, in words, with a CSS class.
-function hologramText(h) {
-  switch ((h || {}).status) {
-    case "sent":     return ["Sent to the hologram app.", "holo-ok"];
-    case "offline":  return ["Hologram app is offline. Saved; it will be sent automatically when the app is back.", "holo-warn"];
-    case "rejected": return [`Hologram app rejected it (${h.detail || "error"}). Saved; it will be retried.`, "holo-warn"];
-    case "disabled": return ["Not sent: hologram sending is off (HOLOGRAM_SYNC_URL is not set).", "holo-warn"];
-    case "no_photo": return ["No usable face found, so nothing was sent.", "holo-warn"];
-    default:         return ["", ""];
-  }
-}
-async function uploadEmpPhoto(force) {
-  const emp_id = document.getElementById("edit-emp-id").value;
-  const files = document.getElementById("edit-emp-photo-file").files;
-  const st = document.getElementById("edit-emp-photo-status");
-  const forceBtn = document.getElementById("edit-emp-photo-force");
-  st.className = "sub";
-  if (!files.length) { st.textContent = "Choose a photo first."; return; }
-  const fd = new FormData();
-  for (const f of files) fd.append("photos", f);
-  fd.append("add_to_recognition",
-            document.getElementById("edit-emp-photo-recog").checked ? "1" : "0");
-  if (force) fd.append("force", "1");
-  st.textContent = "Uploading… (finding the face takes a few seconds)";
-  forceBtn.hidden = true;
-  let r, res;
-  try {
-    r = await fetch(`/api/employees/${encodeURIComponent(emp_id)}/photo`,
-                    { method: "POST", body: fd });
-    res = await r.json().catch(() => null);
-  } catch (e) {
-    st.textContent = `Upload failed: ${e}`; return;
-  }
-  if (r.status === 409 && res && res.error === "mismatch") {
-    st.textContent = res.message;
-    st.className = "sub holo-warn";
-    forceBtn.hidden = false;
-    return;
-  }
-  if (!r.ok || !res || !res.ok) {
-    st.textContent = `Upload failed: ${(res && (res.message || res.error)) || r.status}`;
-    return;
-  }
-  const [holo, cls] = hologramText(res.hologram);
-  const added = res.samples ? ` Added ${res.samples} face sample${res.samples === 1 ? "" : "s"} to recognition.` : "";
-  st.textContent = `Photo saved.${added} ${holo}`;
-  st.className = `sub ${cls}`;
-  document.getElementById("edit-emp-photo-file").value = "";
-  showEmpPhoto(emp_id, res.photo);
-  refresh();
-}
-document.getElementById("edit-emp-photo-upload").addEventListener("click", () => uploadEmpPhoto(false));
-document.getElementById("edit-emp-photo-force").addEventListener("click", () => uploadEmpPhoto(true));
 function closeEmpEdit() {
   document.getElementById("employee-edit-modal").hidden = true;
 }
@@ -730,120 +591,15 @@ document.getElementById("add-session").addEventListener("submit", async (ev) => 
   });
   f.reset(); refresh();
 });
-// ---- employee-ID migration ---------------------------------------------
-const idmig = {
-  status: () => document.getElementById("idmig-status"),
-  panel: () => document.getElementById("idmig-panel"),
-  // What the admin has typed, keyed by current ID -> {old: new}.
-  edits() {
-    const out = {};
-    document.querySelectorAll("#idmig-table tbody tr").forEach(tr => {
-      out[tr.dataset.old] = tr.querySelector("input").value.trim().toUpperCase();
-    });
-    return out;
-  },
-  render(plan) {
-    const tb = document.querySelector("#idmig-table tbody");
-    tb.innerHTML = "";
-    for (const p of plan) {
-      const tr = document.createElement("tr");
-      tr.dataset.old = p.old;
-      tr.className = p.action;
-      tr.innerHTML = `<td>${escape(p.name)}</td><td><code>${escape(p.old)}</code></td>
-        <td><input type="text" value="${escape(p.new)}" maxlength="12" autocomplete="off"></td>
-        <td class="sub">${p.action === "keep" ? "no change — " : ""}${escape(p.reason)}</td>`;
-      tr.querySelector("input").addEventListener("input", idmig.validate);
-      tb.appendChild(tr);
-    }
-    idmig.validate();
-  },
-  // Live check: format + no duplicate new IDs.
-  validate() {
-    const rows = [...document.querySelectorAll("#idmig-table tbody tr")];
-    const vals = rows.map(r => r.querySelector("input").value.trim().toUpperCase());
-    let bad = 0;
-    rows.forEach((r, i) => {
-      const dup = vals.filter(v => v === vals[i]).length > 1;
-      const fmt = /^E\d{4,}$/.test(vals[i]);
-      r.classList.toggle("bad", dup || !fmt);
-      if (dup || !fmt) bad++;
-    });
-    document.getElementById("idmig-apply-btn").disabled = bad > 0;
-    return bad === 0;
-  },
-  async call(path, body) {
-    const r = await fetch(path, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-    return data;
-  },
-  async preview(overrides) {
-    const st = idmig.status();
-    st.textContent = "Calculating…";
-    try {
-      const d = await idmig.call("/api/employee-ids/preview", { overrides });
-      idmig.panel().hidden = false;
-      idmig.render(d.plan);
-      st.textContent = d.to_change
-        ? `${d.to_change} of ${d.plan.length} IDs will change. Nothing is saved until you press Apply.`
-        : "Every employee ID is already in the E0001 format — nothing to migrate.";
-      document.getElementById("idmig-apply-btn").hidden = !d.to_change;
-    } catch (e) {
-      st.textContent = `Preview failed: ${e.message}`;
-    }
-  },
-};
-document.getElementById("idmig-preview-btn").addEventListener("click", () => idmig.preview({}));
-document.getElementById("idmig-recalc-btn").addEventListener("click", () => {
-  // Pin only the rows whose ID the admin actually changed.
-  const proposed = {};
-  document.querySelectorAll("#idmig-table tbody tr").forEach(tr => {
-    proposed[tr.dataset.old] = tr.querySelector("input").defaultValue.toUpperCase();
-  });
-  const now = idmig.edits(), pins = {};
-  for (const [old, v] of Object.entries(now)) if (v && v !== proposed[old]) pins[old] = v;
-  idmig.preview(pins);
-});
-document.getElementById("idmig-apply-btn").addEventListener("click", async () => {
-  if (!idmig.validate()) return;
-  const edits = idmig.edits();
-  const changing = Object.entries(edits).filter(([o, n]) => o !== n);
-  if (!changing.length) return;
-  const list = changing.map(([o, n]) => `  ${o}  →  ${n}`).join("\n");
-  if (!confirm(`Rename ${changing.length} employee ID(s)?\n\n${list}\n\n` +
-               `A database backup is taken first. Do this while nobody is using the kiosk.`)) return;
-  const st = idmig.status();
-  st.textContent = "Migrating…";
-  try {
-    const d = await idmig.call("/api/employee-ids/migrate",
-                               { overrides: edits, confirm: true });
-    st.textContent = `Done — ${d.changed} renamed, ${d.kept} unchanged. Backup: ${d.backup || "none needed"}. ` +
-      `Renamed people will be re-sent to the hologram app under their new ID.`;
-    idmig.panel().hidden = true;
-    refresh();
-  } catch (e) {
-    st.textContent = `Migration failed — nothing was changed: ${e.message}`;
-  }
-});
-
 document.getElementById("photo-register-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = ev.target;
   const status = document.getElementById("photo-register-status");
   status.textContent = "Uploading…";
-  status.className = "sub";
   const fd = new FormData(f);
   const r = await fetch("/api/register/photo", { method: "POST", body: fd });
   if (r.ok) {
-    const res = await r.json().catch(() => ({}));
-    const [holo, cls] = hologramText(res.hologram);
-    status.textContent = (res.emp_id
-      ? `Done — registered as ${res.emp_id} (${res.samples} sample${res.samples === 1 ? "" : "s"}).`
-      : "Done — embeddings queued.") + (holo ? " " + holo : "");
-    status.className = `sub ${cls}`;
+    status.textContent = "Done — embeddings queued.";
     f.reset();
     refresh();
   } else {
