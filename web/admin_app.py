@@ -227,7 +227,12 @@ def create_admin_app(
             return ("nothing to update", 400)
         renamed = ("name" in update
                    and update["name"] != (db.get_name(emp_id) or ""))
-        db.set_employee_profile(emp_id, **update)
+        if "name" in update and not renamed:
+            # Passing an unchanged name would clear hologram_synced_at and
+            # re-render their hologram for a welcome-line edit.
+            del update["name"]
+        if update:
+            db.set_employee_profile(emp_id, **update)
         if renamed:
             # The hologram app holds the name too.
             _send_to_hologram(emp_id)
