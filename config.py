@@ -368,8 +368,8 @@ HOLOGRAM_TIMEOUT_SEC = float(os.environ.get("HOLOGRAM_TIMEOUT_SEC", "10"))
 # While the kiosk runs, retry not-yet-sent people this often. 0 = only the
 # start-up utility retries.
 HOLOGRAM_RETRY_SEC = float(os.environ.get("HOLOGRAM_RETRY_SEC", "600"))
-# Send people who have no photo yet (details only). Default off: they are
-# sent once a photo exists.
+# No longer used: the hologram app requires a photo, so people without one
+# are never sent (they go once a photo exists). Kept so old .env files load.
 HOLOGRAM_SEND_WITHOUT_PHOTO = os.environ.get(
     "HOLOGRAM_SEND_WITHOUT_PHOTO", "false").lower() in ("1", "true", "yes", "on")
 # People registered before photos were stored have none. When true, the

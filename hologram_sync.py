@@ -36,7 +36,7 @@ Request sent per employee (one at a time):
 
     employee_id = E0001
     full_name   = Madesh Ramamoorthy
-    image       = <face.jpg, image/jpeg>      (omitted if no photo)
+    photo       = <E0001.jpg, image/jpeg>     (required by the hologram app)
 
 Change `_build_request` if the hologram app expects a different shape.
 
@@ -157,7 +157,8 @@ def enabled() -> bool:
 
 def _build_request(emp_id: str, name: str, jpeg: bytes | None):
     data = {"employee_id": emp_id, "full_name": name}
-    files = ({"image": (f"{emp_id}.jpg", jpeg, "image/jpeg")}
+    # The hologram API's multipart field is `photo` (and it is required).
+    files = ({"photo": (f"{emp_id}.jpg", jpeg, "image/jpeg")}
              if jpeg else None)
     return data, files
 
@@ -170,6 +171,10 @@ def send_employee(db, emp_id: str, session=None) -> bool:
     if name is None:
         return False
     jpeg = db.get_photo(emp_id)
+    if not jpeg:
+        # The hologram app can't build a hologram without a photo.
+        db.mark_hologram_failed(emp_id, "no photo")
+        return False
     data, files = _build_request(emp_id, name, jpeg)
     headers = {}
     if config.HOLOGRAM_API_KEY:
@@ -192,13 +197,13 @@ def sync_pending(db, *, include_no_photo: bool | None = None,
                  delay: float = 0.0, log=print) -> dict:
     """Send every not-yet-sent employee, one by one. Stops at the first
     sign the app is offline. Returns counts."""
-    if include_no_photo is None:
-        include_no_photo = config.HOLOGRAM_SEND_WITHOUT_PHOTO
+    # include_no_photo is accepted for old callers but ignored: the hologram
+    # app can't build a hologram without a photo.
     sent = failed = skipped = 0
     rows = db.hologram_rows(pending_only=True)
     session = requests.Session()
     for emp_id, name, has_photo, _at, _err in rows:
-        if not has_photo and not include_no_photo:
+        if not has_photo:        # the hologram app requires a photo
             skipped += 1
             continue
         try:
