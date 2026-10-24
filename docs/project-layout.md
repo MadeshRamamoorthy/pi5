@@ -16,6 +16,7 @@ pi5/
 ├── frame_streamer.py          MJPEG ring buffer
 │
 ├── chat.py                    LLM client + per-session budget tracking
+├── canada_faq.py              30 fixed Canada-workforce answers + matcher (spoken verbatim, no LLM)
 ├── chat_voice.py              ChatVoiceCapture (records mic, calls ASR)
 ├── asr.py                     ChatASR backends (Hailo / OpenAI / faster-whisper / Vosk)
 ├── async_tts.py               Threaded TTS queue with on_start callbacks
@@ -87,6 +88,7 @@ pi5/
 | `chat_voice.py` | Mic capture + VAD + ASR dispatch | wake_word (pause/resume), asr |
 | `asr.py` | ASR backend factory + four implementations | Hailo NPU / OpenAI / CTranslate2 / Vosk |
 | `chat.py` | OpenAI / Ollama client + budget | StateBus, AsyncTTS |
+| `canada_faq.py` | Fixed Q&A about the Canada employee dataset; edit answers / `aliases` here | `main.py::_submit_chat` |
 | `tts.py` + `async_tts.py` | Piper / pyttsx3 wrappers + queue | OS audio device |
 | `hailo_infer.py` | SCRFD + ArcFace pipeline | Hailo NPU |
 | `database.py` | SQLite schema + CRUD | All persistence callers |

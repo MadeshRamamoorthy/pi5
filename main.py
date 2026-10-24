@@ -39,6 +39,7 @@ from liveness import LivenessChecker
 from quality import (is_quality_face, landmark_anchor, landmarks_drift,
                      shift_matches_direction)
 import solutions as solutions_match
+import canada_faq
 from state import StateBus
 from tts import make_backend
 from wake_word import WakeWordError, WakeWordListener
@@ -1381,6 +1382,22 @@ class CameraWorker(threading.Thread):
                 self.greeter.say(ans)
                 self._last_chat_at = time.time()
                 return
+        # Canada workforce Q&A (headcount, locations, roles, clients, ...):
+        # the fixed answers in canada_faq.py, spoken verbatim. No LLM, no
+        # budget slot. Checked before the echo / staff-meeting / topic
+        # handlers because its wording ("staff members", "production
+        # projects") would otherwise trip them. match_faq is conservative:
+        # anything that isn't clearly one of those questions returns None
+        # and continues down the normal chain.
+        faq = canada_faq.match_faq(question)
+        if faq is not None:
+            ans = faq["answer"]
+            print(f"[chat] canada-faq intent -> #{faq['id']}: "
+                  f"{faq['question']!r}", flush=True)
+            self._append_chat("assistant", ans)
+            self.greeter.say(ans)
+            self._last_chat_at = time.time()
+            return
         # "What is ECHO?" -> the brand's full form (no LLM).
         if _is_echo_meaning_query(question):
             full = getattr(config, "ECHO_FULL_FORM", "").strip()
